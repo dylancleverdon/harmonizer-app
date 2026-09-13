@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB audio class 1, subclass 3: MIDI Streaming. Matches any class-compliant
+         controller rather than a list of vendor ids. -->
+    <usb-device class="1" subclass="3" />
+</resources>
