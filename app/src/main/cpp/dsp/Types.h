@@ -39,6 +39,14 @@ enum class HarmonyMode : int {
     // Voice lands on the absolute pitch of the MIDI note, whatever is sung.
     // Needs the pitch tracker, so it only runs in this mode.
     Absolute = 1,
+    // The chord held on the keyboard is reduced to a set of intervals above its
+    // lowest note, and the *input* supplies that lowest note. Play C-E-G and the
+    // input becomes the root while two voices sit +400 and +700 cents above it;
+    // play the same shape anywhere on the keyboard and you get the same chord
+    // around the same played note. The anchor need not be the root -- see
+    // Params::chordAnchorDegree. Costs no more than a fixed interval
+    // -- the input's own pitch never has to be measured, only used.
+    ChordVoicing = 2,
 };
 
 // Snapshot of engine state for the UI. Written by the audio thread, read by
@@ -55,6 +63,10 @@ struct Metrics {
     float detectedPitchHz = 0.0f;       // 0 when unvoiced or not in absolute mode
     float inputPeak = 0.0f;
     float outputPeak = 0.0f;
+    int   rootNote = -1;                // chord-voicing root (lowest note held)
+    // The chord tone the input is standing in for. Equal to rootNote when the
+    // chosen degree is the root, or when the chord did not contain it.
+    int   anchorNote = -1;
 };
 
 // Everything the UI can change while audio is running. Plain atomics rather
@@ -70,6 +82,14 @@ struct Params {
     std::atomic<bool>  adaptiveVoiceScaling{false};
 
     std::atomic<bool>  formantCorrection{true};
+    // Which chord tone the input itself is taken to be: 1 (root), 3, 5, 7, 9,
+    // 11 or 13. When the held chord does not contain that degree, the root is
+    // used instead.
+    std::atomic<int>   chordAnchorDegree{1};
+    // The anchor tone is the input, so by default no voice is generated for it.
+    // Turn this on to resynthesise it as well, which matters when running fully
+    // wet.
+    std::atomic<bool>  doubleAnchor{false};
     std::atomic<int>   harmonyMode{static_cast<int>(HarmonyMode::FixedInterval)};
     std::atomic<float> wetDry{0.5f};                // 0 = dry only, 1 = wet only
     std::atomic<float> outputGain{1.0f};

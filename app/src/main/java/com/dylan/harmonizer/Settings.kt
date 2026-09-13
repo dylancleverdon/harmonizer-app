@@ -18,10 +18,33 @@ enum class QualityMode(val id: Int, val title: String) {
 
 enum class HarmonyMode(val id: Int, val title: String) {
     FIXED_INTERVAL(0, "Fixed interval"),
-    ABSOLUTE(1, "Absolute pitch");
+    ABSOLUTE(1, "Absolute pitch"),
+    /** You are one tone of the chord; the rest is built around your pitch. */
+    CHORD_VOICING(2, "Chord voicing");
 
     companion object {
         fun fromId(id: Int) = entries.firstOrNull { it.id == id } ?: FIXED_INTERVAL
+    }
+}
+
+/**
+ * Which tone of the held chord your own instrument is standing in for.
+ *
+ * When the chord does not contain the chosen degree the engine falls back to the
+ * root, so an unexpected chord shape still produces a usable harmony rather than
+ * silence.
+ */
+enum class ChordDegree(val degree: Int, val title: String, val detail: String) {
+    ROOT(1, "Root", "The chord is built upward from your note."),
+    THIRD(3, "3rd", "Major third, or minor if that is what is held."),
+    FIFTH(5, "5th", "Perfect, or diminished/augmented if that is what is held."),
+    SEVENTH(7, "7th", "Dominant seventh, or major seventh if that is what is held."),
+    NINTH(9, "9th", "Ninth, or flat ninth."),
+    ELEVENTH(11, "11th", "Eleventh."),
+    THIRTEENTH(13, "13th", "Thirteenth.");
+
+    companion object {
+        fun fromDegree(d: Int) = entries.firstOrNull { it.degree == d } ?: ROOT
     }
 }
 
@@ -32,6 +55,8 @@ data class HarmonizerSettings(
     val adaptiveVoiceScaling: Boolean = false,
     val formantCorrection: Boolean = true,
     val harmonyMode: HarmonyMode = HarmonyMode.FIXED_INTERVAL,
+    val chordDegree: ChordDegree = ChordDegree.ROOT,
+    val doubleAnchor: Boolean = false,
     val wetDry: Float = 0.5f,
     val outputGain: Float = 1.0f,
     val fftSize: Int = 1024,
@@ -52,6 +77,8 @@ class SettingsStore(context: Context) {
         adaptiveVoiceScaling = prefs.getBoolean(K_ADAPT_VOICE, false),
         formantCorrection = prefs.getBoolean(K_FORMANT, true),
         harmonyMode = HarmonyMode.fromId(prefs.getInt(K_HARMONY, 0)),
+        chordDegree = ChordDegree.fromDegree(prefs.getInt(K_DEGREE, 1)),
+        doubleAnchor = prefs.getBoolean(K_DOUBLE_ANCHOR, false),
         wetDry = prefs.getFloat(K_WETDRY, 0.5f),
         outputGain = prefs.getFloat(K_GAIN, 1.0f),
         fftSize = prefs.getInt(K_FFT, 1024),
@@ -69,6 +96,8 @@ class SettingsStore(context: Context) {
             .putBoolean(K_ADAPT_VOICE, s.adaptiveVoiceScaling)
             .putBoolean(K_FORMANT, s.formantCorrection)
             .putInt(K_HARMONY, s.harmonyMode.id)
+            .putInt(K_DEGREE, s.chordDegree.degree)
+            .putBoolean(K_DOUBLE_ANCHOR, s.doubleAnchor)
             .putFloat(K_WETDRY, s.wetDry)
             .putFloat(K_GAIN, s.outputGain)
             .putInt(K_FFT, s.fftSize)
@@ -85,6 +114,8 @@ class SettingsStore(context: Context) {
         const val K_ADAPT_VOICE = "adaptiveVoiceScaling"
         const val K_FORMANT = "formantCorrection"
         const val K_HARMONY = "harmonyMode"
+        const val K_DEGREE = "chordDegree"
+        const val K_DOUBLE_ANCHOR = "doubleAnchor"
         const val K_WETDRY = "wetDry"
         const val K_GAIN = "outputGain"
         const val K_FFT = "fftSize"

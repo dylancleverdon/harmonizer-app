@@ -23,6 +23,12 @@ What it checks:
   settings change, otherwise adjusting quality mid-performance shifts timing.
 * **Absolute mode** — sing one pitch, play another note, confirm the output lands
   on the note played rather than an interval from it.
+* **Chord voicing** — the whole chord is measured at once: the right tones appear
+  around the input, the input's own pitch is absent from the wet signal (it is the
+  player's to supply), the same shape transposed gives an identical result, minor
+  and diminished chords find their altered degrees, anchoring on the 5th or 7th
+  places voices below rather than above, and a degree the chord does not contain
+  falls back to the root.
 * **Polyphony** — ten notes held, an eleventh steals a voice, output stays finite
   and inside full scale.
 * **Cost** — each quality mode timed against realtime, so the settings can be

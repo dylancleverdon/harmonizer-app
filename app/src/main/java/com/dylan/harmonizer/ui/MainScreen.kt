@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -14,6 +15,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,7 +30,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.dylan.harmonizer.AudioDeviceOption
 import com.dylan.harmonizer.HarmonizerViewModel
+import com.dylan.harmonizer.ChordDegree
 import com.dylan.harmonizer.HarmonyMode
+import com.dylan.harmonizer.MidiController
 import com.dylan.harmonizer.MidiPort
 
 @Composable
@@ -68,6 +72,7 @@ fun MainScreen(
     val midiPorts by vm.midi.ports.collectAsState()
     val midiConnected by vm.midi.connected.collectAsState()
     val lastNote by vm.midi.lastNote.collectAsState()
+    val heldNotes by vm.midi.heldNotes.collectAsState()
 
     Column(
         Modifier
@@ -164,7 +169,10 @@ fun MainScreen(
 
         // --- harmony ----------------------------------------------------------
         SectionCard("Harmony") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 HarmonyMode.entries.forEach { mode ->
                     FilterChip(
                         selected = settings.harmonyMode == mode,
@@ -178,15 +186,21 @@ fun MainScreen(
                     HarmonyMode.FIXED_INTERVAL ->
                         "Each MIDI note sets a fixed interval measured in cents from middle C. " +
                             "E above middle C is +400 cents, so that voice tracks 400 cents above " +
-                            "whatever you sing."
+                            "whatever you play."
                     HarmonyMode.ABSOLUTE ->
-                        "Each voice lands on the exact pitch of the note played, whatever you sing. " +
-                            "Needs a confident read on your pitch, so it works best on sustained, " +
-                            "clearly voiced notes."
+                        "Each voice lands on the exact pitch of the note played, whatever you " +
+                            "play. Needs a confident read on your pitch, so it works best on " +
+                            "sustained, clearly voiced notes."
+                    HarmonyMode.CHORD_VOICING ->
+                        "Hold a chord and you supply one of its tones yourself; the rest is built " +
+                            "around your pitch. The same shape anywhere on the keyboard gives the " +
+                            "same chord, and no pitch tracking is needed, so this costs no more " +
+                            "than a fixed interval."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
             if (settings.harmonyMode == HarmonyMode.ABSOLUTE) {
                 StatRow(
                     "Detected pitch",
@@ -203,8 +217,68 @@ fun MainScreen(
                     )
                 }
             }
+
+            if (settings.harmonyMode == HarmonyMode.CHORD_VOICING) {
+                Text(
+                    "You are playing the",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ChordDegree.entries.forEach { degree ->
+                        FilterChip(
+                            selected = settings.chordDegree == degree,
+                            onClick = { vm.update { it.copy(chordDegree = degree) } },
+                            label = { Text(degree.title) }
+                        )
+                    }
+                }
+                Text(
+                    settings.chordDegree.detail +
+                        " If the chord you hold has no ${settings.chordDegree.title.lowercase()}, " +
+                        "the root is used instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                ChordReadout(
+                    heldNotes = heldNotes,
+                    rootNote = metrics.rootNote,
+                    anchorNote = metrics.anchorNote,
+                    degree = settings.chordDegree
+                )
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.fillMaxWidth(0.78f)) {
+                        Text("Double your own note", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Off by default: you are already playing that tone, so the engine " +
+                                "leaves it to you. Turn it on when running fully wet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.doubleAnchor,
+                        onCheckedChange = { v -> vm.update { it.copy(doubleAnchor = v) } }
+                    )
+                }
+            }
+
             StatRow("Voices sounding", "${metrics.activeVoices} / 10")
             VoiceDots(metrics.activeVoices)
+            if (settings.harmonyMode == HarmonyMode.CHORD_VOICING && !settings.doubleAnchor &&
+                heldNotes.isNotEmpty()
+            ) {
+                Text(
+                    "One fewer than the notes you are holding: your own tone is not synthesised.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // --- routing ----------------------------------------------------------
@@ -258,6 +332,66 @@ fun MainScreen(
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+
+/**
+ * Shows the chord being held, which tone the player is standing in for, and --
+ * importantly -- when the requested degree was missing and the engine fell back
+ * to the root, so that is never a silent surprise.
+ */
+@Composable
+private fun ChordReadout(
+    heldNotes: List<Int>,
+    rootNote: Int,
+    anchorNote: Int,
+    degree: ChordDegree
+) {
+    if (heldNotes.isEmpty()) {
+        Text(
+            "Hold a chord to hear it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    StatRow("Chord held", heldNotes.joinToString(" ") { MidiController.noteName(it) })
+
+    if (heldNotes.size < 2) {
+        Text(
+            "That is only your own note. Hold at least two so there is something to " +
+                "place around it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary
+        )
+        return
+    }
+
+    if (rootNote < 0 || anchorNote < 0) return
+
+    val fellBack = degree != ChordDegree.ROOT && anchorNote == rootNote
+    if (fellBack) {
+        Text(
+            "No ${degree.title.lowercase()} in this chord, so you are the root " +
+                "(${MidiController.noteName(rootNote)}).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary
+        )
+    } else {
+        StatRow(
+            "You are the ${degree.title.lowercase()}",
+            MidiController.noteName(anchorNote),
+            emphasis = true
+        )
+        val intervals = heldNotes
+            .filter { it != anchorNote }
+            .joinToString(", ") { n ->
+                val cents = (n - anchorNote) * 100
+                if (cents >= 0) "+$cents" else "$cents"
+            }
+        StatRow("Voices at", "$intervals cents")
     }
 }
 

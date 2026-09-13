@@ -54,8 +54,10 @@ flags it when it sees a Bluetooth output selected.
 
 ## How the harmony is worked out
 
+There are three harmony modes.
+
 **Fixed interval** (the default) treats every MIDI note as an offset in cents from
-middle C, and applies that offset to whatever you are singing:
+middle C, and applies that offset to whatever you are playing:
 
 | You play | Semitones from middle C | Shift applied |
 |---|---|---|
@@ -65,16 +67,65 @@ middle C, and applies that offset to whatever you are singing:
 | G3 (note 55) | −5 | −500 cents |
 | C5 (note 72) | +12 | +1200 cents |
 
-Sing a G and hold E4, and that voice sings 400 cents above your G. The harmony is
+Play a G and hold E4, and that voice sounds 400 cents above your G. The harmony is
 parallel and moves with you.
 
 **Absolute pitch** instead makes each voice land on the exact pitch of the note
-played, whatever you sing — play C–E–G and you get a C–E–G triad out. This needs a
+played, whatever you play — hold C–E–G and you get a C–E–G triad out. This needs a
 confident read on your own pitch, so it works best on sustained, clearly voiced
-notes, and it is worth raising the analysis window to 2048 for low voices.
+notes, and it is worth raising the analysis window to 2048 for low registers.
 
-Both modes are switchable on the main screen. The pitch tracker only runs in
-absolute mode, so fixed-interval mode pays nothing for it.
+**Chord voicing** is the one to reach for with a trumpet. Hold a chord and *you*
+supply one of its tones; the engine builds the rest around your pitch. Hold C–E–G
+and play a concert A: the A becomes the root, and two voices appear +400 and +700
+cents above it. Hold the same shape anywhere on the keyboard and you get the same
+chord — the shape is reduced to intervals, so its absolute position is irrelevant.
+
+Because your own note *is* one of the chord tones, nothing has to measure your
+pitch — the intervals are simply applied to whatever you play. This mode costs no
+more than fixed-interval mode and needs no pitch tracker.
+
+### Which tone are you?
+
+By default you are the root and the chord stacks upward. **You are playing the**
+lets you be any chord tone instead — 3rd, 5th, 7th, 9th, 11th or 13th — and the
+rest of the chord is placed around you, above *and below*:
+
+| Hold | You are | Play a concert A | Voices you get | Chord that results |
+|---|---|---|---|---|
+| C–E–G | Root | A | C♯, E above | A major |
+| C–E–G | 3rd | A | F below, C above | F major |
+| C–E–G | 5th | A | D, F♯ below | D major |
+| C–E–G–B♭ | 7th | A | B, D♯, F♯ below | B7 |
+
+The same three keys held down give you four different chords depending only on
+which tone you declare yourself to be.
+
+Anchoring on the 5th or 7th is how you put the whole chord *underneath* the
+melody, which is usually what you want when the trumpet is carrying the top line.
+
+The degree is matched by pitch class, so it is found wherever it is voiced in the
+chord, and it adapts to chord quality: "3rd" finds the minor third in a minor
+chord, "5th" finds the flattened fifth in a diminished one. Preference order is
+major third before minor, perfect fifth before diminished or augmented, dominant
+seventh before major.
+
+**If the chord does not contain the degree you asked for, the root is used
+instead** — you still get a usable chord built on your note rather than silence.
+The main screen says so when it happens, so it is never a silent surprise.
+
+Two things worth knowing:
+
+* A three-note chord sounds **two** voices, because you are the third one. The
+  voice counter reflects this and the screen explains it.
+* Holding a single note produces no harmony at all — that note is just you. Hold
+  at least two.
+
+**Double your own note** is off by default, since you are already playing that
+tone. Turn it on when running fully wet, where you would otherwise lose it.
+
+All three modes are switchable on the main screen. The pitch tracker only runs in
+absolute mode, so the other two pay nothing for it.
 
 ---
 

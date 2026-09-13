@@ -35,6 +35,10 @@ class MidiController(
     private val _lastNote = MutableStateFlow<String?>(null)
     val lastNote: StateFlow<String?> = _lastNote
 
+    /** Notes currently held, ascending. Used to show the chord being voiced. */
+    private val _heldNotes = MutableStateFlow<List<Int>>(emptyList())
+    val heldNotes: StateFlow<List<Int>> = _heldNotes
+
     private var openDevice: MidiDevice? = null
     private var openPort: android.media.midi.MidiOutputPort? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -99,6 +103,7 @@ class MidiController(
         runCatching { openDevice?.close() }
         openDevice = null
         _connected.value = null
+        _heldNotes.value = emptyList()
     }
 
     private val receiver = object : MidiReceiver() {
@@ -110,8 +115,19 @@ class MidiController(
     private val parser = MidiParser { status, d1, d2 ->
         onEvent(status, d1, d2)
         val cmd = status and 0xF0
-        if (cmd == 0x90 && d2 > 0) {
-            _lastNote.value = "${noteName(d1)}  ${centsFromMiddleC(d1)} cents"
+        when {
+            cmd == 0x90 && d2 > 0 -> {
+                _lastNote.value = "${noteName(d1)}  ${centsFromMiddleC(d1)} cents"
+                // Mirrors what the engine does with the same bytes, so the chord
+                // readout matches what is actually sounding.
+                _heldNotes.value = (_heldNotes.value + d1).distinct().sorted()
+            }
+            cmd == 0x80 || (cmd == 0x90 && d2 == 0) -> {
+                _heldNotes.value = _heldNotes.value.filterNot { it == d1 }
+            }
+            cmd == 0xB0 && (d1 == 123 || d1 == 120) -> {
+                _heldNotes.value = emptyList()
+            }
         }
     }
 

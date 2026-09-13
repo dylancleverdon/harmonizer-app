@@ -22,6 +22,8 @@ object NativeBridge {
         const val OUTPUT_GAIN = 7
         const val FFT_SIZE = 8
         const val BYPASS = 9
+        const val CHORD_ANCHOR_DEGREE = 10
+        const val DOUBLE_ANCHOR = 11
     }
 
     /** Matches AudioEngine::kUnspecified: let the platform pick the device. */
@@ -69,10 +71,14 @@ data class EngineMetrics(
     val totalLatencyMs: Float = 0f,
     val xRuns: Int = 0,
     val sampleRate: Int = 48000,
-    val burstFrames: Int = 0
+    val burstFrames: Int = 0,
+    /** Lowest note of the held chord, or -1. Chord-voicing mode only. */
+    val rootNote: Int = -1,
+    /** The chord tone the input stands in for. Equals rootNote on fallback. */
+    val anchorNote: Int = -1
 ) {
     companion object {
-        const val SIZE = 14
+        const val SIZE = 16
 
         fun from(v: FloatArray) = EngineMetrics(
             cpuLoad = v[0],
@@ -88,7 +94,9 @@ data class EngineMetrics(
             totalLatencyMs = v[10],
             xRuns = v[11].toInt(),
             sampleRate = v[12].toInt(),
-            burstFrames = v[13].toInt()
+            burstFrames = v[13].toInt(),
+            rootNote = v[14].toInt(),
+            anchorNote = v[15].toInt()
         )
     }
 }

@@ -126,6 +126,8 @@ class HarmonizerViewModel(app: Application) : AndroidViewModel(app) {
         NativeBridge.nativeSetParam(handle, p.OUTPUT_GAIN, s.outputGain)
         NativeBridge.nativeSetParam(handle, p.FFT_SIZE, s.fftSize.toFloat())
         NativeBridge.nativeSetParam(handle, p.BYPASS, if (s.bypass) 1f else 0f)
+        NativeBridge.nativeSetParam(handle, p.CHORD_ANCHOR_DEGREE, s.chordDegree.degree.toFloat())
+        NativeBridge.nativeSetParam(handle, p.DOUBLE_ANCHOR, if (s.doubleAnchor) 1f else 0f)
     }
 
     /** True when the current routing will almost certainly howl. */

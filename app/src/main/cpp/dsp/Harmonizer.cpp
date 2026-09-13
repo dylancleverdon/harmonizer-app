@@ -197,10 +197,84 @@ void Harmonizer::drainMidi() {
     }
 }
 
+namespace {
+// Which semitone classes above the chord root count as a given degree, in
+// preference order. A dominant seventh turns up far more often than a major
+// one, so 10 is tried before 11; a perfect fifth before a diminished or
+// augmented one. Listing alternatives rather than a single interval is what
+// lets "the 5th" still find the note in a diminished or altered chord.
+struct DegreeSpec {
+    int degree;
+    int count;
+    int semitones[3];
+};
+
+constexpr DegreeSpec kDegreeSpecs[] = {
+    { 1,  1, { 0,  0, 0} },
+    { 3,  2, { 4,  3, 0} },   // major third, else minor
+    { 5,  3, { 7,  6, 8} },   // perfect, else diminished, else augmented
+    { 7,  2, {10, 11, 0} },   // minor/dominant seventh, else major
+    { 9,  2, { 2,  1, 0} },   // ninth, else flat ninth
+    {11,  1, { 5,  0, 0} },
+    {13,  1, { 9,  0, 0} },
+};
+}  // namespace
+
+// Finds the note in the held chord that the input is standing in for. Returns
+// the root when the requested degree is not present, which is the sensible
+// fallback: the player still gets a chord built on their note rather than
+// silence or an arbitrary substitution.
+int Harmonizer::findAnchorNote(int rootNote, int degree) const {
+    if (rootNote < 0) return -1;
+    if (degree <= 1) return rootNote;
+
+    const DegreeSpec* spec = nullptr;
+    for (const DegreeSpec& d : kDegreeSpecs) {
+        if (d.degree == degree) { spec = &d; break; }
+    }
+    if (spec == nullptr) return rootNote;
+
+    for (int i = 0; i < spec->count; ++i) {
+        const int want = spec->semitones[i];
+        int best = -1;
+        for (const Slot& s : slots_) {
+            if (!s.held || s.note < 0) continue;
+            // Pitch class, so the degree is found wherever it is voiced. When a
+            // chord doubles it across octaves, the lowest one anchors.
+            int rel = (s.note - rootNote) % 12;
+            if (rel < 0) rel += 12;
+            if (rel == want && (best < 0 || s.note < best)) best = s.note;
+        }
+        if (best >= 0) return best;
+    }
+    return rootNote;
+}
+
 void Harmonizer::updateVoiceRatios() {
     const HarmonyMode mode =
         static_cast<HarmonyMode>(params_.harmonyMode.load(std::memory_order_relaxed));
+    const bool doubleAnchor = params_.doubleAnchor.load(std::memory_order_relaxed);
     const float f0 = analyzer_.pitchHz();
+
+    // Chord voicing: the lowest key held is the chord's root, and one tone of
+    // that chord -- the anchor -- is supplied by the player's own instrument
+    // rather than synthesised. Expressing the chord as intervals from the
+    // anchor is what makes the shape transposition-invariant: the same
+    // fingering anywhere on the keyboard produces the same chord around
+    // whatever note is being played into the mic.
+    int rootNote = -1;
+    int anchorNote = -1;
+    if (mode == HarmonyMode::ChordVoicing) {
+        for (const Slot& s : slots_) {
+            if (s.held && s.note >= 0 && (rootNote < 0 || s.note < rootNote)) {
+                rootNote = s.note;
+            }
+        }
+        anchorNote = findAnchorNote(
+            rootNote, params_.chordAnchorDegree.load(std::memory_order_relaxed));
+    }
+    mRoot_.store(rootNote, std::memory_order_relaxed);
+    mAnchor_.store(anchorNote, std::memory_order_relaxed);
 
     // ~15 ms gain slew: fast enough to feel immediate, slow enough that note
     // starts and stops do not click.
@@ -210,25 +284,56 @@ void Harmonizer::updateVoiceRatios() {
 
     for (auto& s : slots_) {
         if (!s.held && s.gain < 1e-4f) { s.gain = 0.0f; s.note = -1; continue; }
-        if (s.note >= 0) {
-            if (mode == HarmonyMode::FixedInterval) {
-                // Everything is relative to middle C, exactly as specced:
-                // E above middle C is 4 semitones = 400 cents = 2^(400/1200).
-                s.ratio = std::exp2(static_cast<float>(s.note - 60) / 12.0f);
-            } else if (f0 > 20.0f) {
-                const float target = 440.0f * std::exp2(static_cast<float>(s.note - 69) / 12.0f);
-                s.ratio = clampf(target / f0, 0.25f, 4.0f);
+
+        // Ratios are recomputed only while the key is down. A voice that is
+        // releasing keeps the ratio it was sounding at, so letting go of the
+        // root does not yank the pitch of the notes still ringing above it.
+        if (s.held && s.note >= 0) {
+            switch (mode) {
+                case HarmonyMode::FixedInterval:
+                    // Everything is relative to middle C, exactly as specced:
+                    // E above middle C is 4 semitones = 400 cents.
+                    s.ratio = std::exp2(static_cast<float>(s.note - 60) / 12.0f);
+                    break;
+
+                case HarmonyMode::Absolute:
+                    if (f0 > 20.0f) {
+                        const float target =
+                            440.0f * std::exp2(static_cast<float>(s.note - 69) / 12.0f);
+                        s.ratio = clampf(target / f0, 0.25f, 4.0f);
+                    }
+                    // With no confident pitch the last ratio is held rather
+                    // than snapping to unison mid-phrase.
+                    break;
+
+                case HarmonyMode::ChordVoicing:
+                    // Notes below the anchor shift down, notes above shift up --
+                    // so anchoring on the 5th puts the rest of the chord
+                    // underneath the player rather than above.
+                    s.ratio = (anchorNote >= 0)
+                        ? std::exp2(static_cast<float>(s.note - anchorNote) / 12.0f)
+                        : 1.0f;
+                    break;
             }
-            // In absolute mode with no confident pitch, the last ratio is held
-            // rather than snapping to unison mid-phrase.
         }
+
+        // The anchor tone is already in the room -- it is the input. Generating
+        // a unison voice for it would double the player against themselves, so
+        // by default only the rest of the chord is synthesised.
+        float target = s.held ? s.velocity : 0.0f;
+        if (mode == HarmonyMode::ChordVoicing && !doubleAnchor &&
+            s.held && s.note == anchorNote) {
+            target = 0.0f;
+        }
+        s.gainTarget = target;
+
         s.gain += (s.gainTarget - s.gain) * coef;
         if (s.gain > 1e-4f) ++active;
     }
+
     mVoices_.store(active, std::memory_order_relaxed);
     mPitch_.store(f0, std::memory_order_relaxed);
 }
-
 
 namespace {
 // A table of random unit vectors beats calling sin/cos for every bin of every
@@ -507,6 +612,8 @@ Metrics Harmonizer::metrics() const {
     m.detectedPitchHz = mPitch_.load(std::memory_order_relaxed);
     m.inputPeak = mInPeak_.load(std::memory_order_relaxed);
     m.outputPeak = mOutPeak_.load(std::memory_order_relaxed);
+    m.rootNote = mRoot_.load(std::memory_order_relaxed);
+    m.anchorNote = mAnchor_.load(std::memory_order_relaxed);
     return m;
 }
 

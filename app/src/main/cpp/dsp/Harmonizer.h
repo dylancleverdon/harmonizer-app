@@ -51,6 +51,7 @@ private:
     void runHop();
     void synthesiseResidual(float gain);
     void updateVoiceRatios();
+    int  findAnchorNote(int rootNote, int degree) const;
     void applyQualitySettings();
     void reconfigure(int baseFft, int decimation);
     void updateAdaptive(float load);
@@ -112,7 +113,7 @@ private:
     // --- metrics (audio thread writes, UI thread reads) ---------------------
     std::atomic<float> mCpu_{0.0f}, mQuality_{0.0f}, mPitch_{0.0f};
     std::atomic<float> mInPeak_{0.0f}, mOutPeak_{0.0f};
-    std::atomic<int>   mVoices_{0}, mPartials_{0}, mBits_{32};
+    std::atomic<int>   mVoices_{0}, mPartials_{0}, mBits_{32}, mRoot_{-1}, mAnchor_{-1};
     std::atomic<float> mInternalRate_{48000.0f};
 };
 

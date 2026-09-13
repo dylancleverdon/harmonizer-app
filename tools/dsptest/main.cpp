@@ -62,6 +62,65 @@ static double dominantFreq(const float* x, int n, double sr) {
     return (best + delta) * sr / N;
 }
 
+
+// --- multi-peak measurement, for checking a whole chord at once -------------
+
+struct Spectrum {
+    int N = 0;
+    double sr = 0.0;
+    std::vector<double> mag;
+    double maxMag = 0.0;
+};
+
+static Spectrum analyse(const float* x, int n, double sr) {
+    Spectrum s;
+    s.sr = sr;
+    s.N = 1;
+    while (s.N * 2 <= n) s.N *= 2;
+    std::vector<float> buf(s.N), re(s.N / 2 + 1), im(s.N / 2 + 1);
+    for (int i = 0; i < s.N; ++i) {
+        buf[i] = x[n - s.N + i] * static_cast<float>(0.5 - 0.5 * std::cos(2.0 * kPi * i / s.N));
+    }
+    RealFft(s.N).forward(buf.data(), re.data(), im.data());
+    s.mag.resize(static_cast<size_t>(s.N / 2 + 1));
+    for (int k = 0; k <= s.N / 2; ++k) {
+        s.mag[k] = std::hypot(re[k], im[k]);
+        if (k > 1) s.maxMag = std::max(s.maxMag, s.mag[k]);
+    }
+    return s;
+}
+
+// Loudest bin within tolerance of hz, as a fraction of the spectrum's peak.
+static double relLevelNear(const Spectrum& s, double hz, double tolCents = 60.0) {
+    const double lo = hz * std::pow(2.0, -tolCents / 1200.0);
+    const double hi = hz * std::pow(2.0, tolCents / 1200.0);
+    const int kLo = std::max(1, static_cast<int>(std::floor(lo * s.N / s.sr)));
+    const int kHi = std::min(s.N / 2 - 1, static_cast<int>(std::ceil(hi * s.N / s.sr)));
+    double best = 0.0;
+    for (int k = kLo; k <= kHi; ++k) best = std::max(best, s.mag[k]);
+    return s.maxMag > 0.0 ? best / s.maxMag : 0.0;
+}
+
+// Refined frequency of the strongest component near hz, or 0 if nothing is there.
+static double peakFreqNear(const Spectrum& s, double hz, double tolCents = 60.0) {
+    const double lo = hz * std::pow(2.0, -tolCents / 1200.0);
+    const double hi = hz * std::pow(2.0, tolCents / 1200.0);
+    const int kLo = std::max(2, static_cast<int>(std::floor(lo * s.N / s.sr)));
+    const int kHi = std::min(s.N / 2 - 2, static_cast<int>(std::ceil(hi * s.N / s.sr)));
+    int best = -1;
+    double bestMag = 0.0;
+    for (int k = kLo; k <= kHi; ++k) {
+        if (s.mag[k] > bestMag) { bestMag = s.mag[k]; best = k; }
+    }
+    if (best < 0 || bestMag < s.maxMag * 0.02) return 0.0;
+    const double y0 = std::log(s.mag[best - 1] + 1e-20);
+    const double y1 = std::log(bestMag + 1e-20);
+    const double y2 = std::log(s.mag[best + 1] + 1e-20);
+    const double denom = 2.0 * (2.0 * y1 - y0 - y2);
+    const double delta = (std::fabs(denom) > 1e-12) ? (y2 - y0) / denom : 0.0;
+    return (best + delta) * s.sr / s.N;
+}
+
 static double centsErr(double measured, double expected) {
     if (measured <= 0.0 || expected <= 0.0) return 1e9;
     return 1200.0 * std::log2(measured / expected);
@@ -254,6 +313,270 @@ static void testPolyphony() {
     check(h.metrics().activeVoices == 10 && finite(out2), msg);
 }
 
+
+static void testChordVoicing() {
+    printf("\n-- Chord voicing: the input is the root, the chord goes around it --\n");
+    const double sr = 48000.0;
+
+    auto runChord = [&](const std::vector<int>& notes, bool doubleAnchor,
+                        double inputHz) -> std::vector<float> {
+        Harmonizer h;
+        h.prepare(sr, 192);
+        h.params().qualityMode.store(static_cast<int>(QualityMode::Vocoder));
+        h.params().qualityAmount.store(0.0f);
+        h.params().formantCorrection.store(false);
+        h.params().wetDry.store(1.0f);            // wet only: judge the harmony alone
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::ChordVoicing));
+        h.params().doubleAnchor.store(doubleAnchor);
+        for (int n : notes) noteOn(h, n);
+
+        std::vector<float> in(static_cast<size_t>(sr * 1.0));
+        makeVoice(in, inputHz, sr);
+        return run(h, in);
+    };
+
+    // A major triad on the keyboard puts +400 and +700 cents around the input.
+    {
+        const double f0 = 220.0;
+        std::vector<float> out = runChord({60, 64, 67}, false, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+
+        const double third = f0 * std::pow(2.0, 4.0 / 12.0);
+        const double fifth = f0 * std::pow(2.0, 7.0 / 12.0);
+        const double gotThird = peakFreqNear(s, third);
+        const double gotFifth = peakFreqNear(s, fifth);
+        const double atRoot = relLevelNear(s, f0);
+
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "C-E-G over %.0f Hz -> +400 at %7.2f Hz (%+5.1f cents), "
+                 "+700 at %7.2f Hz (%+5.1f cents)",
+                 f0, gotThird, centsErr(gotThird, third), gotFifth, centsErr(gotFifth, fifth));
+        check(std::fabs(centsErr(gotThird, third)) < 12.0 &&
+              std::fabs(centsErr(gotFifth, fifth)) < 12.0, msg);
+
+        snprintf(msg, sizeof(msg),
+                 "root is not doubled: level at %.0f Hz is %.1f dB below the chord",
+                 f0, 20.0 * std::log10(atRoot + 1e-12));
+        check(atRoot < 0.05, msg);
+    }
+
+    // The same shape higher up the keyboard must give the same chord. This is
+    // the whole point of measuring intervals from the lowest note held.
+    {
+        const double f0 = 220.0;
+        std::vector<float> a = runChord({60, 64, 67}, false, f0);
+        std::vector<float> b = runChord({65, 69, 72}, false, f0);   // F-A-C, same shape
+        Spectrum sa = analyse(a.data(), static_cast<int>(a.size()), sr);
+        Spectrum sb = analyse(b.data(), static_cast<int>(b.size()), sr);
+
+        const double third = f0 * std::pow(2.0, 4.0 / 12.0);
+        const double fifth = f0 * std::pow(2.0, 7.0 / 12.0);
+        const double da = centsErr(peakFreqNear(sb, third), peakFreqNear(sa, third));
+        const double db = centsErr(peakFreqNear(sb, fifth), peakFreqNear(sa, fifth));
+
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "transposition invariant: C-E-G vs F-A-C differ by %+.2f and %+.2f cents",
+                 da, db);
+        check(std::fabs(da) < 2.0 && std::fabs(db) < 2.0, msg);
+    }
+
+    // Chord quality carries through: a minor shape gives a minor third.
+    {
+        const double f0 = 220.0;
+        std::vector<float> out = runChord({60, 63, 67}, false, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        const double minor3 = f0 * std::pow(2.0, 3.0 / 12.0);
+        const double got = peakFreqNear(s, minor3);
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "C-Eb-G over %.0f Hz -> +300 at %7.2f Hz (want %7.2f, %+5.1f cents)",
+                 f0, got, minor3, centsErr(got, minor3));
+        check(std::fabs(centsErr(got, minor3)) < 12.0, msg);
+    }
+
+    // Same chord, different input note: the harmony follows the player.
+    {
+        const double f0 = 147.0;
+        std::vector<float> out = runChord({60, 64, 67}, false, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        const double fifth = f0 * std::pow(2.0, 7.0 / 12.0);
+        const double got = peakFreqNear(s, fifth);
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "same chord over %.0f Hz instead -> +700 at %7.2f Hz (want %7.2f, %+5.1f cents)",
+                 f0, got, fifth, centsErr(got, fifth));
+        check(std::fabs(centsErr(got, fifth)) < 12.0, msg);
+    }
+
+    // Opting in to doubling the root brings the unison voice back.
+    {
+        const double f0 = 220.0;
+        std::vector<float> out = runChord({60, 64, 67}, true, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        const double atRoot = relLevelNear(s, f0);
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "double-root on: level at %.0f Hz is %.1f dB relative to the chord",
+                 f0, 20.0 * std::log10(atRoot + 1e-12));
+        check(atRoot > 0.3, msg);
+    }
+
+    // Voice accounting: a three-note chord sounds two voices, not three.
+    {
+        Harmonizer h;
+        h.prepare(sr, 192);
+        h.params().wetDry.store(1.0f);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::ChordVoicing));
+        for (int n : {60, 64, 67}) noteOn(h, n);
+        std::vector<float> in(static_cast<size_t>(sr * 0.4));
+        makeVoice(in, 220.0, sr);
+        run(h, in);
+        char msg[200];
+        snprintf(msg, sizeof(msg), "3-note chord sounds %d voices (the root is the input)",
+                 h.metrics().activeVoices);
+        check(h.metrics().activeVoices == 2, msg);
+
+        snprintf(msg, sizeof(msg), "engine reports root as MIDI %d", h.metrics().rootNote);
+        check(h.metrics().rootNote == 60, msg);
+    }
+
+    // One note held is only a root, so there is nothing to place around it.
+    {
+        const double f0 = 220.0;
+        std::vector<float> out = runChord({60}, false, f0);
+        float peak = 0.0f;
+        for (float v : out) peak = std::max(peak, std::fabs(v));
+        char msg[200];
+        snprintf(msg, sizeof(msg), "a single held note produces no harmony (peak %.5f)", peak);
+        check(peak < 0.01f, msg);
+    }
+}
+
+
+static void testAnchorDegree() {
+    printf("\n-- Chord voicing: choosing which chord tone the input is --\n");
+    const double sr = 48000.0;
+
+    auto runChord = [&](const std::vector<int>& notes, int degree,
+                        double inputHz) -> std::vector<float> {
+        Harmonizer h;
+        h.prepare(sr, 192);
+        h.params().qualityMode.store(static_cast<int>(QualityMode::Vocoder));
+        h.params().qualityAmount.store(0.0f);
+        h.params().formantCorrection.store(false);
+        h.params().wetDry.store(1.0f);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::ChordVoicing));
+        h.params().chordAnchorDegree.store(degree);
+        for (int n : notes) noteOn(h, n);
+
+        std::vector<float> in(static_cast<size_t>(sr * 1.0));
+        makeVoice(in, inputHz, sr);
+        return run(h, in);
+    };
+
+    // Expect a component `semis` semitones from the input, and confirm the
+    // input's own pitch is absent because that is the tone the player supplies.
+    auto expectTone = [&](const Spectrum& s, double inputHz, int semis, const char* what) {
+        const double want = inputHz * std::pow(2.0, semis / 12.0);
+        const double got = peakFreqNear(s, want);
+        char msg[240];
+        snprintf(msg, sizeof(msg), "    %-26s %+3d semis -> %7.2f Hz (want %7.2f, %+5.1f cents)",
+                 what, semis, got, want, centsErr(got, want));
+        check(std::fabs(centsErr(got, want)) < 12.0, msg);
+    };
+
+    const double f0 = 220.0;
+
+    // Anchored on the 5th: the player is the top of the triad, so the root and
+    // third are placed below them.
+    {
+        printf("  C-E-G, input is the 5th (G):\n");
+        std::vector<float> out = runChord({60, 64, 67}, 5, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -7, "root C below");
+        expectTone(s, f0, -3, "third E below");
+        char msg[200];
+        const double atSelf = relLevelNear(s, f0);
+        snprintf(msg, sizeof(msg), "    input's own pitch not doubled (%.1f dB down)",
+                 20.0 * std::log10(atSelf + 1e-12));
+        check(atSelf < 0.05, msg);
+    }
+
+    // Anchored on the 3rd: one voice below, one above.
+    {
+        printf("  C-E-G, input is the 3rd (E):\n");
+        std::vector<float> out = runChord({60, 64, 67}, 3, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -4, "root C below");
+        expectTone(s, f0, +3, "fifth G above");
+    }
+
+    // A seventh chord anchored on its seventh.
+    {
+        printf("  C-E-G-Bb, input is the 7th (Bb):\n");
+        std::vector<float> out = runChord({60, 64, 67, 70}, 7, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -10, "root C below");
+        expectTone(s, f0,  -6, "third E below");
+        expectTone(s, f0,  -3, "fifth G below");
+    }
+
+    // Minor chords: "the 3rd" must find the minor third, not give up.
+    {
+        printf("  C-Eb-G, input is the 3rd (Eb):\n");
+        std::vector<float> out = runChord({60, 63, 67}, 3, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -3, "root C below");
+        expectTone(s, f0, +4, "fifth G above");
+    }
+
+    // Diminished: "the 5th" must still find the flattened one.
+    {
+        printf("  C-Eb-Gb, input is the 5th (Gb):\n");
+        std::vector<float> out = runChord({60, 63, 66}, 5, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -6, "root C below");
+        expectTone(s, f0, -3, "third Eb below");
+    }
+
+    // The requested degree is missing, so it falls back to the root.
+    {
+        printf("  C-E-G with no 7th, input asks to be the 7th:\n");
+        std::vector<float> out = runChord({60, 64, 67}, 7, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, +4, "falls back: third above");
+        expectTone(s, f0, +7, "falls back: fifth above");
+
+        Harmonizer h;
+        h.prepare(sr, 192);
+        h.params().wetDry.store(1.0f);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::ChordVoicing));
+        h.params().chordAnchorDegree.store(7);
+        for (int n : {60, 64, 67}) noteOn(h, n);
+        std::vector<float> in(static_cast<size_t>(sr * 0.4));
+        makeVoice(in, f0, sr);
+        run(h, in);
+        const Metrics m = h.metrics();
+        char msg[220];
+        snprintf(msg, sizeof(msg),
+                 "    engine reports root %d, anchor %d (equal = fell back, as asked)",
+                 m.rootNote, m.anchorNote);
+        check(m.rootNote == 60 && m.anchorNote == 60, msg);
+    }
+
+    // A degree voiced high still anchors, and the octave doubling above it is
+    // placed an octave up rather than at unison.
+    {
+        printf("  C3-G3-E5, input is the 3rd (E5, two octaves up):\n");
+        std::vector<float> out = runChord({48, 55, 76}, 3, f0);
+        Spectrum s = analyse(out.data(), static_cast<int>(out.size()), sr);
+        expectTone(s, f0, -28, "root C3 below");
+        expectTone(s, f0, -21, "fifth G3 below");
+    }
+}
+
 static void benchmark() {
     printf("\n-- Cost of each quality mode (10 voices, x86 desktop) --\n");
     printf("   Relative numbers are what matter; absolute figures will differ on the phone.\n\n");
@@ -311,6 +634,8 @@ int main() {
     testWetKeepsTime();
     testAbsoluteMode();
     testPolyphony();
+    testChordVoicing();
+    testAnchorDegree();
     benchmark();
 
     printf("\n=============================================\n");
