@@ -19,13 +19,17 @@ AudioEngine::AudioEngine() {
 
 AudioEngine::~AudioEngine() { stop(); }
 
-bool AudioEngine::start(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset) {
+bool AudioEngine::start(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset,
+                        int32_t requestedSampleRate, int32_t bufferBursts) {
     std::lock_guard<std::mutex> lock(streamLock_);
     restartInputDevice_ = inputDeviceId;
     restartOutputDevice_ = outputDeviceId;
     restartPreset_ = inputPreset;
+    restartSampleRate_ = requestedSampleRate;
+    restartBursts_ = bufferBursts;
     closeStreams();
-    if (!openStreams(inputDeviceId, outputDeviceId, inputPreset)) {
+    if (!openStreams(inputDeviceId, outputDeviceId, inputPreset,
+                     requestedSampleRate, bufferBursts)) {
         closeStreams();
         return false;
     }
@@ -34,7 +38,8 @@ bool AudioEngine::start(int32_t inputDeviceId, int32_t outputDeviceId, int32_t i
 }
 
 bool AudioEngine::openStreams(int32_t inputDeviceId, int32_t outputDeviceId,
-                              int32_t inputPreset) {
+                              int32_t inputPreset, int32_t requestedSampleRate,
+                              int32_t bufferBursts) {
     // Input first: the output stream's callback reads from it, so it has to
     // exist before the callback can fire.
     oboe::AudioStreamBuilder inBuilder;
@@ -43,10 +48,14 @@ bool AudioEngine::openStreams(int32_t inputDeviceId, int32_t outputDeviceId,
             ->setSharingMode(oboe::SharingMode::Exclusive)
             ->setFormat(oboe::AudioFormat::Float)
             ->setChannelCount(oboe::ChannelCount::Mono)
-            ->setSampleRate(48000)
-            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium)
             ->setInputPreset(static_cast<oboe::InputPreset>(inputPreset));
     if (inputDeviceId != kUnspecified) inBuilder.setDeviceId(inputDeviceId);
+    if (requestedSampleRate > 0) {
+        // Only ask for conversion when a rate is actually requested; left alone,
+        // the stream opens at the device's native rate with nothing in the way.
+        inBuilder.setSampleRate(requestedSampleRate)
+                ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium);
+    }
 
     oboe::Result r = inBuilder.openStream(inputStream_);
     if (r != oboe::Result::OK) {
@@ -61,7 +70,10 @@ bool AudioEngine::openStreams(int32_t inputDeviceId, int32_t outputDeviceId,
             ->setSharingMode(oboe::SharingMode::Exclusive)
             ->setFormat(oboe::AudioFormat::Float)
             ->setChannelCount(oboe::ChannelCount::Stereo)
+            // Match whatever the input actually opened at, so no rate conversion
+            // is needed between the two halves of the duplex pair.
             ->setSampleRate(inputStream_->getSampleRate())
+            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium)
             ->setUsage(oboe::Usage::Media)
             ->setDataCallback(this)
             ->setErrorCallback(this);
@@ -79,9 +91,13 @@ bool AudioEngine::openStreams(int32_t inputDeviceId, int32_t outputDeviceId,
     sampleRate_.store(sr);
     burst_.store(burst);
 
-    // Two bursts is the usual sweet spot: one is prone to underruns under load,
-    // three costs latency for no benefit.
-    outputStream_->setBufferSizeInFrames(burst * 2);
+    // One burst is the lowest latency and the least tolerant of a late callback;
+    // more bursts trade milliseconds for robustness. Two is the usual sweet spot,
+    // but under a heavy chord on a busy phone, three or four is what stops the
+    // crackle.
+    const int32_t bursts = std::max(1, std::min(8, bufferBursts));
+    outputStream_->setBufferSizeInFrames(burst * bursts);
+    bufferFrames_.store(outputStream_->getBufferSizeInFrames());
 
     harmonizer_.prepare(static_cast<double>(sr), std::min(kMaxCallbackFrames, burst * 4));
 
@@ -96,8 +112,8 @@ bool AudioEngine::openStreams(int32_t inputDeviceId, int32_t outputDeviceId,
         return false;
     }
 
-    LOGI("streams open: %d Hz, burst %d, in ch %d, out ch %d", sr, burst,
-         inputChannels_, outputChannels_);
+    LOGI("streams open: %d Hz (requested %d), burst %d x %d, in ch %d, out ch %d",
+         sr, requestedSampleRate, burst, bursts, inputChannels_, outputChannels_);
     return true;
 }
 
@@ -181,7 +197,8 @@ void AudioEngine::onErrorAfterClose(oboe::AudioStream*, oboe::Result error) {
     LOGI("stream error after close (%s); reopening", oboe::convertToText(error));
     std::lock_guard<std::mutex> lock(streamLock_);
     closeStreams();
-    if (openStreams(restartInputDevice_, restartOutputDevice_, restartPreset_)) {
+    if (openStreams(restartInputDevice_, restartOutputDevice_, restartPreset_,
+                    restartSampleRate_, restartBursts_)) {
         running_.store(true);
     }
 }

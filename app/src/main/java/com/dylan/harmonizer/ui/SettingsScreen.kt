@@ -1,6 +1,7 @@
 package com.dylan.harmonizer.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,11 +26,14 @@ import androidx.compose.ui.unit.dp
 import com.dylan.harmonizer.HarmonizerViewModel
 import com.dylan.harmonizer.NativeBridge
 import com.dylan.harmonizer.QualityMode
+import com.dylan.harmonizer.StreamRate
 
 @Composable
 fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
     val settings by vm.settings.collectAsState()
     val metrics by vm.metrics.collectAsState()
+    // Fall back to 48 kHz for the previews before a stream has ever been opened.
+    val rate = if (metrics.sampleRate > 0) metrics.sampleRate else 48000
 
     Column(
         Modifier
@@ -102,6 +106,96 @@ fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
             StatRow("Effective amount now", "${(metrics.effectiveQuality * 100).toInt()} %")
         }
 
+        // --- the audio stream itself, as opposed to the wet path ------------
+        SectionCard("Audio stream") {
+            Text(
+                "This is the rate everything runs at, not just the harmonies. Lowering it " +
+                    "means every stage handles fewer samples per second while the callback " +
+                    "deadline stays the same length, which is the most direct way to stop " +
+                    "dropouts. The cost is bandwidth, and a longer window in milliseconds " +
+                    "for the same window size.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StreamRate.entries.forEach { option ->
+                    FilterChip(
+                        selected = settings.streamRate == option,
+                        onClick = { vm.update { it.copy(streamRate = option) } },
+                        label = { Text(option.title) }
+                    )
+                }
+            }
+            StatRow(
+                "Running at",
+                if (metrics.sampleRate > 0) "${metrics.sampleRate} Hz" else "--",
+                emphasis = true
+            )
+            if (settings.streamRate != StreamRate.DEVICE &&
+                metrics.sampleRate > 0 && metrics.sampleRate != settings.streamRate.hz
+            ) {
+                Text(
+                    "The device would not open at ${settings.streamRate.hz} Hz, so it is " +
+                        "running at ${metrics.sampleRate} Hz instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            Text(
+                "Device default is the cheapest of all, because nothing has to be converted.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                "Output buffer",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 2, 3, 4).forEach { n ->
+                    FilterChip(
+                        selected = settings.bufferBursts == n,
+                        onClick = { vm.update { it.copy(bufferBursts = n) } },
+                        label = { Text(if (n == 1) "1 burst" else "$n bursts") }
+                    )
+                }
+            }
+            Text(
+                "How much slack the output has before a late callback becomes an audible " +
+                    "gap. 1 is the tightest and the least forgiving; raise it if you hear " +
+                    "crackle under a big chord. Each burst costs about " +
+                    (if (metrics.burstFrames > 0 && metrics.sampleRate > 0)
+                        "%.1f ms".format(metrics.burstFrames * 1000f / metrics.sampleRate)
+                     else "one burst") + " of latency.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            StatRow(
+                "Buffer / burst",
+                if (metrics.burstFrames > 0)
+                    "${metrics.bufferFrames} / ${metrics.burstFrames} frames"
+                else "--"
+            )
+            StatRow("Dropouts since start", metrics.xRuns.toString())
+            if (metrics.xRuns > 0) {
+                Text(
+                    "Dropouts are being counted. Raise the buffer, lower the stream rate, or " +
+                        "push the reduction amount up until this stops climbing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            Text(
+                "Changing either of these reopens the audio streams, so there is a brief gap.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         // --- engine -----------------------------------------------------------
         SectionCard("Engine") {
             ToggleRow(
@@ -118,8 +212,11 @@ fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(512, 1024, 2048).forEach { size ->
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(256, 512, 1024, 2048).forEach { size ->
                     FilterChip(
                         selected = settings.fftSize == size,
                         onClick = { vm.update { it.copy(fftSize = size) } },
@@ -130,13 +227,26 @@ fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
             Text(
                 "This is the single biggest lever on latency, and it is the one thing the " +
                     "quality modes deliberately do not touch. " +
-                    "512 gives ${engineLatency(512)} ms but resolves low notes poorly; " +
-                    "2048 gives ${engineLatency(2048)} ms and is the right choice for " +
+                    "256 gives ${engineLatency(256, rate)} ms but resolves low notes poorly; " +
+                    "2048 gives ${engineLatency(2048, rate)} ms and is the right choice for " +
                     "absolute-pitch mode on low voices.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            StatRow("Engine latency at this size", "${engineLatency(settings.fftSize)} ms", emphasis = true)
+            StatRow(
+                "Engine latency at this size",
+                "${engineLatency(settings.fftSize, rate)} ms",
+                emphasis = true
+            )
+            if (rate < 44100) {
+                Text(
+                    "At $rate Hz a window of ${settings.fftSize} samples lasts longer in " +
+                        "milliseconds than it would at 48 kHz. Drop the window size a step to " +
+                        "win that time back.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
         }
 
         SectionCard("Microphone") {
@@ -243,6 +353,10 @@ private fun ToggleRow(
     }
 }
 
-/** Mirrors the engine's own latency formula: (3/4 * window + resampler) / rate. */
-private fun engineLatency(fftSize: Int): String =
-    "%.1f".format((fftSize * 0.75f + 63f) / 48000f * 1000f)
+/**
+ * Mirrors the engine's own latency formula: (3/4 * window + resampler) / rate.
+ * The rate is a parameter rather than a constant because the stream rate is now
+ * adjustable, and quoting 48 kHz figures at 24 kHz would be off by double.
+ */
+private fun engineLatency(fftSize: Int, sampleRate: Int): String =
+    "%.1f".format((fftSize * 0.75f + 63f) / sampleRate.toFloat() * 1000f)

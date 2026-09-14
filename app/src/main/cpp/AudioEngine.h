@@ -20,7 +20,20 @@ public:
 
     // Device ids come from Android's AudioDeviceInfo; kUnspecified lets the
     // platform choose. inputPreset maps to oboe::InputPreset.
-    bool start(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset);
+    //
+    // requestedSampleRate of 0 means "whatever the device runs natively", which
+    // is the cheapest option because nothing has to be converted. Asking for a
+    // lower rate makes Oboe convert, but every stage downstream then handles
+    // proportionally fewer samples per second -- and since the burst is still
+    // reported in app-rate frames, the callback deadline in milliseconds is
+    // unchanged. Less work in the same time is what buys headroom against
+    // dropouts.
+    //
+    // bufferBursts sets the output buffer as a multiple of one burst. 1 is the
+    // lowest latency and the least tolerant of a late callback; higher values
+    // trade milliseconds for robustness.
+    bool start(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset,
+               int32_t requestedSampleRate, int32_t bufferBursts);
     void stop();
     bool isRunning() const { return running_.load(); }
 
@@ -33,6 +46,7 @@ public:
     int   xRuns() const;
     int32_t actualSampleRate() const { return sampleRate_.load(); }
     int32_t burstFrames() const { return burst_.load(); }
+    int32_t bufferFrames() const { return bufferFrames_.load(); }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* stream, void* audioData,
                                           int32_t numFrames) override;
@@ -41,7 +55,8 @@ public:
     static constexpr int32_t kUnspecified = -1;
 
 private:
-    bool openStreams(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset);
+    bool openStreams(int32_t inputDeviceId, int32_t outputDeviceId, int32_t inputPreset,
+                     int32_t requestedSampleRate, int32_t bufferBursts);
     void closeStreams();
 
     std::shared_ptr<oboe::AudioStream> inputStream_;
@@ -62,8 +77,11 @@ private:
     std::atomic<float> outputLatencyMs_{0.0f};
     std::atomic<int32_t> sampleRate_{48000};
     std::atomic<int32_t> burst_{192};
+    std::atomic<int32_t> bufferFrames_{0};
 
     int32_t restartInputDevice_ = kUnspecified;
     int32_t restartOutputDevice_ = kUnspecified;
     int32_t restartPreset_ = 0;
+    int32_t restartSampleRate_ = 0;
+    int32_t restartBursts_ = 2;
 };

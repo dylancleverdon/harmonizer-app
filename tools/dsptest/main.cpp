@@ -184,7 +184,7 @@ static void testIntervals(QualityMode mode, const char* modeName, float amount) 
 static void testLatencyAlignment() {
     printf("\n-- Dry-path delay compensation --\n");
     const double sr = 48000.0;
-    for (int fftSize : {512, 1024, 2048}) {
+    for (int fftSize : {256, 512, 1024, 2048}) {
         Harmonizer h;
         h.prepare(sr, 192);
         h.params().fftSize.store(fftSize);
@@ -373,6 +373,98 @@ static void testRepeatedPrepare() {
                  peak, got, want);
         check(peak > 0.02f && std::fabs(centsErr(got, want)) < 12.0, msg);
     }
+}
+
+
+// The stream rate is user-selectable, so the engine has to hold up at all of
+// them -- including the extreme corner where a low stream rate is combined with
+// maximum sample-rate reduction, which is where the internal transform gets
+// smallest and the Nyquist limit starts clipping partials.
+static void testLowStreamRates() {
+    printf("\n-- Engine across selectable stream rates --\n");
+    const double f0 = 220.0;
+    const double want = f0 * std::pow(2.0, 4.0 / 12.0);   // +400 cents
+
+    for (double sr : {16000.0, 24000.0, 32000.0, 44100.0, 48000.0}) {
+        Harmonizer h;
+        h.prepare(sr, 96);
+        h.prepare(sr, 96);                                 // as the audio engine does
+        h.params().qualityMode.store(static_cast<int>(QualityMode::Vocoder));
+        h.params().qualityAmount.store(0.35f);
+        h.params().formantCorrection.store(false);
+        h.params().wetDry.store(1.0f);
+        noteOn(h, 64);
+
+        std::vector<float> in(static_cast<size_t>(sr * 1.0));
+        makeVoice(in, f0, sr);
+        std::vector<float> out = run(h, in, 96);
+
+        float peak = 0.0f;
+        for (float v : out) peak = std::max(peak, std::fabs(v));
+        const double got = dominantFreq(out.data(), static_cast<int>(out.size()), sr);
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "%6.0f Hz stream: peak %.3f, +400 cents at %7.2f Hz (%+5.1f cents), "
+                 "engine latency %.1f ms",
+                 sr, peak, got, centsErr(got, want), h.algorithmicLatencyMs());
+        check(peak > 0.02f && std::fabs(centsErr(got, want)) < 15.0 && finite(out), msg);
+    }
+
+    // Worst case: lowest stream rate and the deepest internal rate reduction on
+    // top of it, so the internal transform bottoms out.
+    {
+        const double sr = 16000.0;
+        Harmonizer h;
+        h.prepare(sr, 96);
+        h.params().qualityMode.store(static_cast<int>(QualityMode::SampleRate));
+        h.params().qualityAmount.store(1.0f);              // maximum reduction
+        h.params().wetDry.store(1.0f);
+        for (int n : {60, 64, 67, 72}) noteOn(h, n);
+
+        std::vector<float> in(static_cast<size_t>(sr * 0.8));
+        makeVoice(in, f0, sr);
+        std::vector<float> out = run(h, in, 96);
+
+        float peak = 0.0f;
+        for (float v : out) peak = std::max(peak, std::fabs(v));
+        const Metrics m = h.metrics();
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "16 kHz + max rate reduction: internal %.0f Hz, %d voices, peak %.3f, finite",
+                 m.internalSampleRate, m.activeVoices, peak);
+        check(finite(out) && peak <= 1.001f, msg);
+    }
+}
+
+
+static void testSmallestWindow() {
+    printf("\n-- Smallest analysis window (lowest latency setting) --\n");
+    const double sr = 48000.0;
+    const double f0 = 330.0;                 // a trumpet-ish register
+    const double want = f0 * std::pow(2.0, 7.0 / 12.0);
+
+    Harmonizer h;
+    h.prepare(sr, 96);
+    h.params().fftSize.store(256);
+    h.prepare(sr, 96);
+    h.params().qualityMode.store(static_cast<int>(QualityMode::Vocoder));
+    h.params().qualityAmount.store(0.35f);
+    h.params().formantCorrection.store(false);
+    h.params().wetDry.store(1.0f);
+    noteOn(h, 67);
+
+    std::vector<float> in(static_cast<size_t>(sr * 0.8));
+    makeVoice(in, f0, sr);
+    std::vector<float> out = run(h, in, 96);
+
+    float peak = 0.0f;
+    for (float v : out) peak = std::max(peak, std::fabs(v));
+    const double got = dominantFreq(out.data(), static_cast<int>(out.size()), sr);
+    char msg[240];
+    snprintf(msg, sizeof(msg),
+             "window 256 at 48 kHz: %.1f ms engine latency, +700 cents at %7.2f Hz (%+5.1f cents)",
+             h.algorithmicLatencyMs(), got, centsErr(got, want));
+    check(peak > 0.02f && std::fabs(centsErr(got, want)) < 20.0 && finite(out), msg);
 }
 
 static void testChordVoicing() {
@@ -696,6 +788,8 @@ int main() {
     testAbsoluteMode();
     testPolyphony();
     testRepeatedPrepare();
+    testLowStreamRates();
+    testSmallestWindow();
     testChordVoicing();
     testAnchorDegree();
     benchmark();

@@ -57,7 +57,10 @@ class HarmonizerViewModel(app: Application) : AndroidViewModel(app) {
     fun start() {
         if (handle == 0L || _running.value) return
         val s = _settings.value
-        val ok = NativeBridge.nativeStart(handle, s.inputDeviceId, s.outputDeviceId, s.inputPreset)
+        val ok = NativeBridge.nativeStart(
+            handle, s.inputDeviceId, s.outputDeviceId, s.inputPreset,
+            s.streamRate.hz, s.bufferBursts
+        )
         _running.value = ok
         _status.value = if (ok) null else
             "Could not open the audio streams. Check that another app is not holding the mic."
@@ -103,9 +106,13 @@ class HarmonizerViewModel(app: Application) : AndroidViewModel(app) {
         store.save(next)
         pushAllParams()
 
+        // These four are baked into the open streams, so they only take effect
+        // on a reopen. Everything else the audio thread picks up live.
         val needsRestart = next.inputDeviceId != old.inputDeviceId ||
             next.outputDeviceId != old.outputDeviceId ||
-            next.inputPreset != old.inputPreset
+            next.inputPreset != old.inputPreset ||
+            next.streamRate != old.streamRate ||
+            next.bufferBursts != old.bufferBursts
         if (needsRestart && _running.value) {
             stop()
             start()

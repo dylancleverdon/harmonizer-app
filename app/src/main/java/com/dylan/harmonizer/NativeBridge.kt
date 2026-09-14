@@ -29,6 +29,9 @@ object NativeBridge {
     /** Matches AudioEngine::kUnspecified: let the platform pick the device. */
     const val DEVICE_UNSPECIFIED = -1
 
+    /** Open the stream at the device's native rate, converting nothing. */
+    const val RATE_DEVICE_DEFAULT = 0
+
     /** Values of oboe::InputPreset that make sense for a live vocal input. */
     object InputPreset {
         const val GENERIC = 1
@@ -42,11 +45,18 @@ object NativeBridge {
 
     external fun nativeCreate(): Long
     external fun nativeDestroy(handle: Long)
+    /**
+     * @param sampleRate   requested stream rate in Hz, or [RATE_DEVICE_DEFAULT]
+     *                     to open at whatever the hardware runs natively.
+     * @param bufferBursts output buffer size as a multiple of one burst.
+     */
     external fun nativeStart(
         handle: Long,
         inputDeviceId: Int,
         outputDeviceId: Int,
-        inputPreset: Int
+        inputPreset: Int,
+        sampleRate: Int,
+        bufferBursts: Int
     ): Boolean
     external fun nativeStop(handle: Long)
     external fun nativeIsRunning(handle: Long): Boolean
@@ -75,10 +85,12 @@ data class EngineMetrics(
     /** Lowest note of the held chord, or -1. Chord-voicing mode only. */
     val rootNote: Int = -1,
     /** The chord tone the input stands in for. Equals rootNote on fallback. */
-    val anchorNote: Int = -1
+    val anchorNote: Int = -1,
+    /** Output buffer size actually granted, in frames. */
+    val bufferFrames: Int = 0
 ) {
     companion object {
-        const val SIZE = 16
+        const val SIZE = 17
 
         fun from(v: FloatArray) = EngineMetrics(
             cpuLoad = v[0],
@@ -96,7 +108,8 @@ data class EngineMetrics(
             sampleRate = v[12].toInt(),
             burstFrames = v[13].toInt(),
             rootNote = v[14].toInt(),
-            anchorNote = v[15].toInt()
+            anchorNote = v[15].toInt(),
+            bufferFrames = v[16].toInt()
         )
     }
 }

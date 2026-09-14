@@ -180,20 +180,42 @@ Both are off by default and stack with the manual slider.
 
 ---
 
-## Latency
+## Latency and dropouts
 
-| Analysis window | Engine latency | Notes |
-|---|---|---|
-| 512 | 9.3 ms | Lowest latency; resolves low notes poorly |
-| 1024 | 17.3 ms | Default |
-| 2048 | 33.3 ms | Best quality; recommended for absolute mode on low voices |
+Two settings control the stream itself, separately from the harmony quality modes.
+
+**Stream rate** is what everything runs at, not just the wet path. Lowering it
+means every stage handles proportionally fewer samples per second, while the
+callback deadline stays the same length in milliseconds — so it is the most
+direct lever against dropouts. Device default is cheapest of all, because nothing
+has to be converted.
+
+**Output buffer** is how much slack the output has before a late callback becomes
+an audible gap. 1 burst is tightest and least forgiving; raise it if you hear
+crackle under a big chord. Each burst costs roughly one burst of latency.
+
+**Analysis window** is the biggest single lever on latency, and the one thing the
+quality modes deliberately never touch:
+
+| Window | at 48 kHz | at 24 kHz | at 16 kHz |
+|---|---|---|---|
+| 256 | 5.3 ms | 10.6 ms | 15.9 ms |
+| 512 | 9.3 ms | 18.6 ms | 27.9 ms |
+| 1024 | 17.3 ms | 34.6 ms | 51.9 ms |
+| 2048 | 33.3 ms | 66.6 ms | 99.9 ms |
+
+The window is a fixed number of *samples*, so at a lower stream rate it lasts
+proportionally longer. Halving the rate and halving the window together keeps
+latency where it was while halving the work. The Settings screen computes the
+real figure from the rate actually running and says so when the two are working
+against each other.
+
+Small windows resolve low notes poorly, so 256 suits a trumpet far better than it
+suits a bass voice. Use 2048 for absolute-pitch mode on low registers.
 
 These are the engine's own contribution. Add the audio hardware on top: roughly
-10–15 ms round trip with a USB interface, 25–40 ms with the built-in mic and wired
-headphones. The main screen shows the measured total.
-
-Window size is the single biggest lever on latency, and it is deliberately the one
-thing the quality modes do not touch.
+10–15 ms round trip with a USB interface, 25–40 ms with the built-in mic and
+wired headphones. The main screen shows the measured total.
 
 ---
 

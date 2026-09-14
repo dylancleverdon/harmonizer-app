@@ -45,10 +45,12 @@ Java_com_dylan_harmonizer_NativeBridge_nativeDestroy(JNIEnv*, jobject, jlong han
 JNIEXPORT jboolean JNICALL
 Java_com_dylan_harmonizer_NativeBridge_nativeStart(JNIEnv*, jobject, jlong handle,
                                                     jint inputDeviceId, jint outputDeviceId,
-                                                    jint inputPreset) {
+                                                    jint inputPreset, jint sampleRate,
+                                                    jint bufferBursts) {
     AudioEngine* e = engineFrom(handle);
     if (!e) return JNI_FALSE;
-    return e->start(inputDeviceId, outputDeviceId, inputPreset) ? JNI_TRUE : JNI_FALSE;
+    return e->start(inputDeviceId, outputDeviceId, inputPreset, sampleRate, bufferBursts)
+               ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -105,17 +107,17 @@ Java_com_dylan_harmonizer_NativeBridge_nativeAllNotesOff(JNIEnv*, jobject, jlong
     if (AudioEngine* e = engineFrom(handle)) e->harmonizer().allNotesOff();
 }
 
-// Fills a float[16] rather than allocating an object per poll; the UI reads
+// Fills a float[17] rather than allocating an object per poll; the UI reads
 // this a few times a second.
 JNIEXPORT void JNICALL
 Java_com_dylan_harmonizer_NativeBridge_nativeGetMetrics(JNIEnv* env, jobject, jlong handle,
                                                          jfloatArray outArray) {
     AudioEngine* e = engineFrom(handle);
     if (!e || outArray == nullptr) return;
-    if (env->GetArrayLength(outArray) < 16) return;
+    if (env->GetArrayLength(outArray) < 17) return;
 
     const dsp::Metrics m = e->harmonizer().metrics();
-    jfloat v[16];
+    jfloat v[17];
     v[0]  = m.cpuLoad;
     v[1]  = m.effectiveQuality;
     v[2]  = static_cast<jfloat>(m.activeVoices);
@@ -132,7 +134,8 @@ Java_com_dylan_harmonizer_NativeBridge_nativeGetMetrics(JNIEnv* env, jobject, jl
     v[13] = static_cast<jfloat>(e->burstFrames());
     v[14] = static_cast<jfloat>(m.rootNote);
     v[15] = static_cast<jfloat>(m.anchorNote);
-    env->SetFloatArrayRegion(outArray, 0, 16, v);
+    v[16] = static_cast<jfloat>(e->bufferFrames());
+    env->SetFloatArrayRegion(outArray, 0, 17, v);
 }
 
 }  // extern "C"

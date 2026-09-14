@@ -53,6 +53,28 @@ enum class ChordDegree(val degree: Int, val title: String, val detail: String) {
     }
 }
 
+/**
+ * Rate the audio streams are opened at. Lowering it makes every stage handle
+ * proportionally fewer samples per second while the callback deadline in
+ * milliseconds stays where it was, which is what buys headroom against dropouts.
+ *
+ * The cost is bandwidth -- and, because the analysis window is a fixed number of
+ * samples, a longer window in milliseconds. Drop the window size alongside the
+ * rate to hold latency steady; the Settings screen shows the resulting figure.
+ */
+enum class StreamRate(val hz: Int, val title: String) {
+    DEVICE(NativeBridge.RATE_DEVICE_DEFAULT, "Device"),
+    HZ_48000(48000, "48 kHz"),
+    HZ_44100(44100, "44.1 kHz"),
+    HZ_32000(32000, "32 kHz"),
+    HZ_24000(24000, "24 kHz"),
+    HZ_16000(16000, "16 kHz");
+
+    companion object {
+        fun fromHz(hz: Int) = entries.firstOrNull { it.hz == hz } ?: DEVICE
+    }
+}
+
 data class HarmonizerSettings(
     val qualityMode: QualityMode = QualityMode.VOCODER,
     val qualityAmount: Float = 0.35f,
@@ -68,7 +90,10 @@ data class HarmonizerSettings(
     val bypass: Boolean = false,
     val inputPreset: Int = NativeBridge.InputPreset.UNPROCESSED,
     val inputDeviceId: Int = NativeBridge.DEVICE_UNSPECIFIED,
-    val outputDeviceId: Int = NativeBridge.DEVICE_UNSPECIFIED
+    val outputDeviceId: Int = NativeBridge.DEVICE_UNSPECIFIED,
+    val streamRate: StreamRate = StreamRate.DEVICE,
+    /** Output buffer as a multiple of one burst: 1 is tightest, 4 is safest. */
+    val bufferBursts: Int = 2
 )
 
 class SettingsStore(context: Context) {
@@ -90,7 +115,9 @@ class SettingsStore(context: Context) {
         bypass = false,
         inputPreset = prefs.getInt(K_PRESET, NativeBridge.InputPreset.UNPROCESSED),
         inputDeviceId = prefs.getInt(K_IN_DEV, NativeBridge.DEVICE_UNSPECIFIED),
-        outputDeviceId = prefs.getInt(K_OUT_DEV, NativeBridge.DEVICE_UNSPECIFIED)
+        outputDeviceId = prefs.getInt(K_OUT_DEV, NativeBridge.DEVICE_UNSPECIFIED),
+        streamRate = StreamRate.fromHz(prefs.getInt(K_RATE, NativeBridge.RATE_DEVICE_DEFAULT)),
+        bufferBursts = prefs.getInt(K_BURSTS, 2)
     )
 
     fun save(s: HarmonizerSettings) {
@@ -109,6 +136,8 @@ class SettingsStore(context: Context) {
             .putInt(K_PRESET, s.inputPreset)
             .putInt(K_IN_DEV, s.inputDeviceId)
             .putInt(K_OUT_DEV, s.outputDeviceId)
+            .putInt(K_RATE, s.streamRate.hz)
+            .putInt(K_BURSTS, s.bufferBursts)
             .apply()
     }
 
@@ -127,5 +156,7 @@ class SettingsStore(context: Context) {
         const val K_PRESET = "inputPreset"
         const val K_IN_DEV = "inputDeviceId"
         const val K_OUT_DEV = "outputDeviceId"
+        const val K_RATE = "streamRate"
+        const val K_BURSTS = "bufferBursts"
     }
 }

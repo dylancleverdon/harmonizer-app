@@ -31,6 +31,9 @@ What it checks:
   falls back to the root.
 * **Polyphony** — ten notes held, an eleventh steals a voice, output stays finite
   and inside full scale.
+* **Stream rates** — the engine re-prepared and exercised at every rate the
+  Settings screen can request, plus the smallest analysis window, plus the corner
+  where the lowest rate meets the deepest internal reduction.
 * **Cost** — each quality mode timed against realtime, so the settings can be
   compared rather than guessed at.
 
