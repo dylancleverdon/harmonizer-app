@@ -314,6 +314,67 @@ static void testPolyphony() {
 }
 
 
+
+// Regression: the audio engine calls prepare() once when it is constructed and
+// again once the device reports its real sample rate and burst size. That second
+// call must leave a fully working engine. It did not -- prepare() re-zeroed the
+// analysis window, and configure() skipped rebuilding it because the size had
+// not changed, so every windowed frame came out zero and the wet path went
+// silent while the dry path carried on as normal.
+static void testRepeatedPrepare() {
+    printf("\n-- Re-preparing the engine (what the audio callback setup does) --\n");
+    const double sr = 48000.0;
+
+    for (int passes = 1; passes <= 3; ++passes) {
+        Harmonizer h;
+        for (int i = 0; i < passes; ++i) h.prepare(sr, 192);   // as AudioEngine does
+
+        h.params().qualityMode.store(static_cast<int>(QualityMode::Vocoder));
+        h.params().qualityAmount.store(0.35f);                  // shipped defaults
+        h.params().wetDry.store(1.0f);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::FixedInterval));
+        noteOn(h, 64);                                          // E above middle C
+
+        std::vector<float> in(static_cast<size_t>(sr * 0.6));
+        makeVoice(in, 220.0, sr);
+        std::vector<float> out = run(h, in);
+
+        float peak = 0.0f;
+        for (float v : out) peak = std::max(peak, std::fabs(v));
+        const double got = dominantFreq(out.data(), static_cast<int>(out.size()), sr);
+        const double want = 220.0 * std::pow(2.0, 4.0 / 12.0);
+
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "prepare() x%d -> wet peak %.4f, dominant %7.2f Hz (want %7.2f)",
+                 passes, peak, got, want);
+        check(peak > 0.02f && std::fabs(centsErr(got, want)) < 12.0, msg);
+    }
+
+    // The same thing one level up: a device whose rate differs from the default.
+    {
+        Harmonizer h;
+        h.prepare(48000.0, 192);
+        h.prepare(44100.0, 96);          // second call with different rate and burst
+        h.params().wetDry.store(1.0f);
+        noteOn(h, 67);
+
+        std::vector<float> in(static_cast<size_t>(44100.0 * 0.6));
+        makeVoice(in, 220.0, 44100.0);
+        std::vector<float> out = run(h, in, 96);
+
+        float peak = 0.0f;
+        for (float v : out) peak = std::max(peak, std::fabs(v));
+        const double got = dominantFreq(out.data(), static_cast<int>(out.size()), 44100.0);
+        const double want = 220.0 * std::pow(2.0, 7.0 / 12.0);
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "re-prepared at 44100/96 -> wet peak %.4f, dominant %7.2f Hz (want %7.2f)",
+                 peak, got, want);
+        check(peak > 0.02f && std::fabs(centsErr(got, want)) < 12.0, msg);
+    }
+}
+
 static void testChordVoicing() {
     printf("\n-- Chord voicing: the input is the root, the chord goes around it --\n");
     const double sr = 48000.0;
@@ -634,6 +695,7 @@ int main() {
     testWetKeepsTime();
     testAbsoluteMode();
     testPolyphony();
+    testRepeatedPrepare();
     testChordVoicing();
     testAnchorDegree();
     benchmark();

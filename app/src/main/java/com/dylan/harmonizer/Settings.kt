@@ -3,13 +3,18 @@ package com.dylan.harmonizer
 import android.content.Context
 import android.content.SharedPreferences
 
+/**
+ * Declaration order sets the order shown in Settings; `id` crosses the JNI
+ * boundary and MUST match `dsp::QualityMode` in Types.h. They were transposed
+ * once already, which silently swapped two of the three modes.
+ */
 enum class QualityMode(val id: Int, val title: String) {
     /** Fewer partials resynthesised per voice. Cheapest per unit of audible loss. */
     VOCODER(2, "Vocoder bands"),
     /** Lower internal sample rate. Window duration is held, so latency does not move. */
-    SAMPLE_RATE(1, "Sample rate"),
+    SAMPLE_RATE(0, "Sample rate"),
     /** Quantise the wet path. Honest about what it does and does not buy. */
-    BIT_DEPTH(0, "Bit depth");
+    BIT_DEPTH(1, "Bit depth");
 
     companion object {
         fun fromId(id: Int) = entries.firstOrNull { it.id == id } ?: VOCODER

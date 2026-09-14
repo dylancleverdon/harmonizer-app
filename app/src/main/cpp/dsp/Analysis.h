@@ -60,6 +60,12 @@ private:
     int   fftSize_ = 0;
     float sampleRate_ = 48000.0f;
     bool  haveEnvelope_ = false;
+    // prepare() reallocates (and therefore zeroes) the window and its
+    // autocorrelation, but configure() used to rebuild them only when the FFT
+    // size changed. Re-preparing at the same size then left an all-zero window,
+    // which silences the whole wet path while leaving dry untouched. This flag
+    // makes the dependency explicit instead of implied by the size comparison.
+    bool  needsWindowRebuild_ = true;
     bool  haveResidual_ = false;
 
     std::vector<std::unique_ptr<RealFft>> ffts_;   // indexed by log2(size)

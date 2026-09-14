@@ -58,16 +58,19 @@ void Analyzer::prepare(int maxFftSize) {
     peakBins_.reserve(static_cast<size_t>(maxBins));
     peaks_.reserve(static_cast<size_t>(kMaxPartials));
 
+    // Everything above was just zeroed, so whatever configure() is asked for
+    // next must rebuild the window even if the size happens to match.
+    needsWindowRebuild_ = true;
     configure(1024, 48000.0f);
 }
 
 void Analyzer::configure(int fftSize, float sampleRate) {
-    const bool sizeChanged = (fftSize != fftSize_);
+    const bool rebuild = (fftSize != fftSize_) || needsWindowRebuild_;
     fftSize_ = fftSize;
     sampleRate_ = sampleRate;
     fft_ = ffts_[static_cast<size_t>(log2i(fftSize))].get();
 
-    if (sizeChanged) {
+    if (rebuild) {
         for (int n = 0; n < fftSize_; ++n) {
             window_[static_cast<size_t>(n)] =
                 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * kPi * n / fftSize_));
@@ -83,6 +86,7 @@ void Analyzer::configure(int fftSize, float sampleRate) {
             im_[static_cast<size_t>(k)] = 0.0f;
         }
         fft_->inverse(re_.data(), im_.data(), winAutocorr_.data());
+        needsWindowRebuild_ = false;
     }
     reset();
 }
