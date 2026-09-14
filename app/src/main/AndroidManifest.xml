@@ -3,6 +3,13 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- The in-app updater fetches the release manifest and APK over HTTPS and
+         hands the result to Android's package installer. The install itself
+         still requires the user to allow this app to install unknown apps, and
+         to confirm each install. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- MIDI over USB-C. Declared as not required so the app still installs and
          runs with the on-screen controls and no controller attached. -->
     <uses-feature android:name="android.software.midi" android:required="false" />
@@ -42,5 +49,15 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_device_filter" />
         </activity>
+
+        <!-- Receives the outcome of an update install, including the prompt
+             Android hands back when it needs the user to confirm. -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dylan.harmonizer.INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

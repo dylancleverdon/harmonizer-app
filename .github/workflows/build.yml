@@ -50,24 +50,47 @@ jobs:
       - name: Assemble
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Name the artifact after the commit
-        id: rename
+      - name: Build the release payload
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/release/app-release.apk \
-             "out/harmonizer-${GITHUB_SHA::7}.apk"
-          echo "apk=out/harmonizer-${GITHUB_SHA::7}.apk" >> "$GITHUB_OUTPUT"
+          # A fixed filename, so the app can point at a permalink that never
+          # changes. The version lives in version.json instead.
+          cp app/build/outputs/apk/release/app-release.apk out/harmonizer.apk
 
-      - name: Upload APK as a workflow artifact
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+
+          apk = "out/harmonizer.apk"
+          run = int(os.environ["GITHUB_RUN_NUMBER"])
+          notes = subprocess.run(
+              ["git", "log", "-1", "--pretty=%s"],
+              capture_output=True, text=True, check=True).stdout.strip()
+
+          # json.dump handles quoting, so a commit subject with quotes or
+          # backslashes in it cannot produce a manifest the app fails to parse.
+          manifest = {
+              "versionCode": 100 + run,
+              "versionName": f"1.0.{run}",
+              "commit": os.environ["GITHUB_SHA"][:7],
+              "sizeBytes": os.path.getsize(apk),
+              "sha256": hashlib.sha256(open(apk, "rb").read()).hexdigest(),
+              "notes": notes,
+          }
+          with open("out/version.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: harmonizer-apk
-          path: out/*.apk
+          path: out/*
           if-no-files-found: error
 
-      # A release asset is a plain download link, which is what makes it
-      # possible to install straight from the phone's browser with no computer
-      # in the loop. Workflow artifacts are zipped and need a login.
+      # A release asset is a plain download link, which is what lets the in-app
+      # updater fetch it with no credentials, and what lets you install straight
+      # from the phone's browser.
       - name: Publish to the "latest" release
         if: >-
           github.event_name != 'pull_request' &&
@@ -76,9 +99,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest "${{ steps.rename.outputs.apk }}" \
-            --title "Latest build" \
-            --notes "Automatic build of ${GITHUB_SHA::7}.
+          gh release create latest out/harmonizer.apk out/version.json \
+            --title "v1.0.${GITHUB_RUN_NUMBER}" \
+            --notes "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA::7}.
 
-          Download the .apk below on the phone and open it to install.
-          Android will ask you to allow installing from your browser the first time."
+          Already have the app installed? Open Settings inside it and tap
+          **Check for updates** -- no need to download anything by hand.
+
+          Installing for the first time: download \`harmonizer.apk\` below and open it."

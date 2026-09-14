@@ -15,17 +15,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.dylan.harmonizer.HarmonizerViewModel
 import com.dylan.harmonizer.NativeBridge
+import com.dylan.harmonizer.InstallStatus
 import com.dylan.harmonizer.QualityMode
+import com.dylan.harmonizer.Updater
 import com.dylan.harmonizer.StreamRate
 
 @Composable
@@ -50,6 +56,9 @@ fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
             Text("Settings", style = MaterialTheme.typography.headlineSmall)
             TextButton(onClick = onBack) { Text("Done") }
         }
+
+        // --- updates ----------------------------------------------------------
+        UpdatesCard(vm)
 
         // --- the three quality-reduction strategies ---------------------------
         SectionCard("Quality reduction method") {
@@ -294,6 +303,104 @@ fun SettingsScreen(vm: HarmonizerViewModel, onBack: () -> Unit) {
                 onChange = { v -> vm.update { it.copy(bypass = v) } }
             )
         }
+    }
+}
+
+
+/**
+ * Checks the project's releases page for a newer build and installs it in place.
+ *
+ * This only works because every build is signed with the same committed key.
+ * With the throwaway per-build keys this app shipped with originally, Android
+ * would reject the install at the last step, so the failure message below calls
+ * that case out by name rather than leaving it as a generic failure.
+ */
+@Composable
+private fun UpdatesCard(vm: HarmonizerViewModel) {
+    val state by vm.updater.state.collectAsState()
+    val installMessage by InstallStatus.message.collectAsState()
+    val context = LocalContext.current
+
+    SectionCard("Updates") {
+        StatRow(
+            "Installed",
+            "${vm.updater.installedVersionName} (${vm.updater.installedVersionCode})"
+        )
+
+        when (val s = state) {
+            is Updater.State.Idle -> {
+                Button(onClick = { vm.checkForUpdate() }) { Text("Check for updates") }
+            }
+
+            is Updater.State.Checking -> {
+                Text("Checking...", style = MaterialTheme.typography.bodyMedium)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
+            is Updater.State.UpToDate -> {
+                Text(
+                    "Up to date.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                OutlinedButton(onClick = { vm.checkForUpdate() }) { Text("Check again") }
+            }
+
+            is Updater.State.Available -> {
+                StatRow("Available", s.info.versionName, emphasis = true)
+                if (s.info.notes.isNotBlank()) {
+                    Text(
+                        s.info.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (s.info.sizeBytes > 0) {
+                    StatRow("Download size", "%.1f MB".format(s.info.sizeBytes / 1024f / 1024f))
+                }
+                if (!vm.updater.canInstall()) {
+                    Warning(
+                        "Android needs permission to let this app install updates. Grant it " +
+                            "once and it will not ask again."
+                    )
+                    Button(onClick = { context.startActivity(vm.updater.permissionIntent()) }) {
+                        Text("Allow installs")
+                    }
+                } else {
+                    Text(
+                        "Audio stops while the update installs.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(onClick = { vm.downloadAndInstall(s.info) }) {
+                        Text("Download and install")
+                    }
+                }
+            }
+
+            is Updater.State.Downloading -> {
+                StatRow("Downloading", "${(s.progress * 100).toInt()} %")
+                LinearProgressIndicator(
+                    progress = { s.progress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            is Updater.State.ReadyToInstall -> {
+                Text(
+                    "Confirm the install when Android asks. The app will restart on the new " +
+                        "version.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            is Updater.State.Failed -> {
+                Warning(s.message)
+                OutlinedButton(onClick = { vm.updater.reset() }) { Text("Dismiss") }
+            }
+        }
+
+        installMessage?.let { Warning(it) }
     }
 }
 

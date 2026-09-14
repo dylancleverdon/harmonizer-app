@@ -4,6 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Every build needs a versionCode strictly greater than the installed one or
+// Android refuses the update. GitHub's run number is monotonic per workflow;
+// the offset keeps it clear of the hardcoded 1 that early builds shipped with.
+val ciRunNumber = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
+val appVersionCode = 100 + (ciRunNumber ?: 0)
+val appVersionName = "1.0.${ciRunNumber ?: 0}"
+
+// The app fetches these to find out whether a newer build exists. They are
+// permalinks to whatever the newest release holds, so they never need updating.
+val updateBase = "https://github.com/dylancleverdon/harmonizer-app/releases/latest/download"
+
 android {
     namespace = "com.dylan.harmonizer"
     compileSdk = 35
@@ -15,8 +26,11 @@ android {
         // Ultra will never execute.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+
+        buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$updateBase/version.json\"")
+        buildConfigField("String", "UPDATE_APK_URL", "\"$updateBase/harmonizer.apk\"")
 
         ndk {
             // The S23 Ultra is arm64 only. Building a single ABI keeps the APK
@@ -43,15 +57,28 @@ android {
         compose = true
         // Oboe ships its headers and .so through prefab.
         prefab = true
+        // Carries the update URLs through to Kotlin.
+        buildConfig = true
+    }
+
+    signingConfigs {
+        create("release") {
+            // Committed to the repository on purpose; see keystore/README.md for
+            // what that costs and how to rotate away from it. The point is that
+            // the signature stays identical across builds, which is the only way
+            // Android will install one over another.
+            storeFile = rootProject.file("keystore/release.jks")
+            storePassword = "harmonizer"
+            keyAlias = "harmonizer"
+            keyPassword = "harmonizer"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so CI produces an APK that installs
-            // directly. Replace this with a real key before distributing.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isJniDebuggable = true

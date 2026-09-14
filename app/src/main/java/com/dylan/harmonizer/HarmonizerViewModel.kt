@@ -34,6 +34,9 @@ class HarmonizerViewModel(app: Application) : AndroidViewModel(app) {
     private val _outputDevices = MutableStateFlow<List<AudioDeviceOption>>(emptyList())
     val outputDevices: StateFlow<List<AudioDeviceOption>> = _outputDevices
 
+    /** In-app updater; see Updater and keystore/README.md. */
+    val updater = Updater(app)
+
     val midi = MidiController(app) { status, d1, d2 ->
         if (handle != 0L) NativeBridge.nativeMidiEvent(handle, status, d1, d2)
     }
@@ -43,6 +46,27 @@ class HarmonizerViewModel(app: Application) : AndroidViewModel(app) {
         pushAllParams()
         midi.start()
         refreshDevices()
+    }
+
+    fun checkForUpdate() {
+        viewModelScope.launch { updater.check() }
+    }
+
+    /**
+     * Downloads then installs. The engine is stopped first: the installer
+     * replaces the process, and holding an exclusive-mode audio stream through
+     * that is a good way to leave the device in a bad state.
+     */
+    fun downloadAndInstall(info: Updater.ReleaseInfo) {
+        viewModelScope.launch {
+            if (!updater.canInstall()) {
+                updater.fail("Allow this app to install unknown apps, then try again.")
+                return@launch
+            }
+            stop()
+            val apk = updater.download(info) ?: return@launch
+            updater.install(apk, info)
+        }
     }
 
     fun refreshDevices() {

@@ -10,16 +10,42 @@ All processing is local. Nothing is uploaded and no network permission is reques
 
 ## Getting it onto the phone
 
-The build runs in GitHub Actions, so no computer is needed.
+**https://github.com/dylancleverdon/harmonizer-app/releases/latest**
 
-1. Push this repository to GitHub.
-2. Actions builds an APK on every push to `main` and attaches it to a release
-   tagged **latest**.
-3. On the phone, open `https://github.com/<you>/<repo>/releases/latest`, tap the
-   `.apk`, and allow your browser to install unknown apps when prompted.
+Download `harmonizer.apk` on the phone and open it. Android will ask permission
+to install from your browser the first time, and Play Protect will warn about an
+unrecognised developer — expected for a sideloaded app.
+
+### Updating
+
+Once installed, you never need to do that again. Open **Settings → Updates** in
+the app and tap **Check for updates**. If a newer build exists it shows the
+version and what changed, downloads it, and hands it to Android's installer. You
+confirm once and the app restarts on the new version.
+
+The first time you use it, Android will ask permission for this app to install
+apps. Grant it once and it stops asking.
+
+> **One last manual install.** Builds before this one were each signed with a
+> different throwaway key, which is why every install needed the old version
+> deleted first. From this build onward every build is signed with the same key
+> — but crossing over to it still requires one uninstall. Delete the app, install
+> `harmonizer.apk` from the link above, and from then on updates happen in place.
+
+Builds are produced by GitHub Actions on every push and attached to the release
+tagged `latest`, alongside a `version.json` the app polls to decide whether an
+update exists.
 
 To build locally instead: open the project in Android Studio, plug the phone in,
-and press Run. Everything needed is in the Gradle files; nothing is vendored.
+and press Run.
+
+### A note on the signing key
+
+`keystore/release.jks` is committed to this public repository, which makes the
+signing key public. That is a deliberate trade for zero-setup builds on a
+personal app — and it does mean anyone could build an APK this phone would accept
+as an update. `keystore/README.md` explains the exposure and how to rotate to a
+key held in repository secrets before sharing the app with anyone.
 
 ---
 
@@ -287,6 +313,7 @@ app/src/main/cpp/
   native-lib      JNI bridge
 app/src/main/java/com/dylan/harmonizer/
   NativeBridge, MidiController, AudioDevices, Settings, HarmonizerViewModel
+  Updater, InstallResultReceiver     in-app update check, download and install
   ui/             Compose screens, rotary knob, meters
 tools/dsptest/    offline validation — see tools/dsptest/README.md
 ```
@@ -312,6 +339,9 @@ polyphony with voice stealing. CI runs it before it will build an APK.
 * **The residual is not pitch-shifted.** Breath and consonants come through at
   their original pitch, which is correct for unvoiced sound but means a
   fully-wet signal still carries some of the original's texture.
-* **Release builds are signed with the debug key** so CI can produce an APK you
-  can install without storing secrets. Replace it with a real key before
-  distributing to anyone else.
+* **The signing key is public**, because it is committed to this public
+  repository so that CI needs no setup. See `keystore/README.md` — rotate to a
+  secret-held key before distributing the app to anyone else.
+* **The updater installs whatever the release page offers.** It verifies nothing
+  beyond the version number, so it is exactly as trustworthy as the repository
+  and the signing key are.
