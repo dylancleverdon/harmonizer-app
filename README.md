@@ -1,16 +1,37 @@
 # Harmonizer
 
-A live MIDI-controlled vocal harmoniser for Android, built for a Galaxy S23 Ultra.
-Sing into the phone, play chords on a MIDI controller, and hear up to ten pitch-shifted
-copies of your voice following the notes you play.
+A live MIDI-controlled harmoniser. Play or sing into it, hold chords on a MIDI
+controller, and hear up to ten pitch-shifted copies following the notes you play.
 
-All processing is local. Nothing is uploaded and no network permission is requested.
+Two front ends, **one engine**:
+
+* **Android app** — built for a Galaxy S23 Ultra. Mic in, harmonies out, no computer.
+* **Audio Unit / VST3 plugin** — for Logic Pro, FL Studio and any other DAW, on
+  macOS and Windows. See [plugin/README.md](plugin/README.md).
+
+They are not two implementations. Both compile the same files from
+`app/src/main/cpp/dsp/`, which depends on nothing platform-specific — so a fix to
+the pitch shifting fixes both, and the offline test suite covers both.
+
+All processing is local. Nothing is uploaded.
 
 ---
 
-## Getting it onto the phone
+## Downloads
 
+Everything lives on one page:
 **https://github.com/dylancleverdon/harmonizer-app/releases/latest**
+
+| You want | Download | Then |
+|---|---|---|
+| The phone app | `harmonizer.apk` | Open it on the phone |
+| The plugin, macOS | `Harmonizer-macOS.zip` | Run `install-macos.command` inside |
+| The plugin, Windows | `Harmonizer-Windows.zip` | Run `install-windows.bat` inside |
+
+Both the app and the plugin update themselves from that page — there is a
+**Check for updates** button in each, so this is a one-time download.
+
+## Getting it onto the phone
 
 Download `harmonizer.apk` on the phone and open it. Android will ask permission
 to install from your browser the first time, and Play Protect will warn about an
@@ -303,7 +324,7 @@ the middle of a 4 ms callback budget would have ruined it.
 
 ```
 app/src/main/cpp/
-  dsp/            engine — pure standard C++, no Android or Oboe dependency
+  dsp/            engine — pure standard C++, shared with the plugin
     Fft           real FFT on a half-length complex transform
     Resampler     polyphase integer decimation and interpolation
     Analysis      STFT, peaks, true frequencies, formant envelope, pitch
@@ -316,6 +337,12 @@ app/src/main/java/com/dylan/harmonizer/
   Updater, InstallResultReceiver     in-app update check, download and install
   ui/             Compose screens, rotary knob, meters
 tools/dsptest/    offline validation — see tools/dsptest/README.md
+
+plugin/
+  CMakeLists.txt  JUCE build for AU, VST3 and standalone
+  Source/         processor, editor, in-plugin updater
+  Tests/          headless checks on the wrapper (parameters, MIDI, latency)
+  packaging/      the install scripts shipped inside each archive
 ```
 
 `dsp/` deliberately has no Android dependency, which is what lets the hard part be

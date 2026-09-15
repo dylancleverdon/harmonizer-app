@@ -1,4 +1,4 @@
-name: Build APK
+name: Build
 
 on:
   push:
@@ -10,100 +10,228 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------------
   dsp-tests:
     name: DSP validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # The DSP core has no Android or Oboe dependency precisely so that it can
-      # be compiled and exercised on a plain host before anything is packaged.
       - name: Build the offline DSP test harness
         run: |
           clang++ -std=c++17 -O2 -Wall -Wextra \
             -Iapp/src/main/cpp/dsp \
-            tools/dsptest/main.cpp app/src/main/cpp/dsp/*.cpp \
-            -o dsptest
-
+            tools/dsptest/main.cpp app/src/main/cpp/dsp/*.cpp -o dsptest
       - name: Run pitch, latency and polyphony checks
         run: ./dsptest
 
-  build:
-    name: Assemble release APK
+  # ---------------------------------------------------------------------------
+  # Builds the plugin on Linux purely to exercise the wrapper: parameter
+  # mapping, host MIDI, channel summing, reported latency. The shipped macOS and
+  # Windows builds cannot run headless tests in CI, so this is where wrapper
+  # regressions get caught.
+  plugin-tests:
+    name: Plugin wrapper checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install audio and GUI development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev \
+            libcurl4-openssl-dev ninja-build
+      - name: Configure
+        run: |
+          cmake -B build -S plugin -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DHARMONIZER_VERSION_CODE=${{ github.run_number }} \
+            -DHARMONIZER_VERSION_NAME=ci
+      - name: Build and run
+        run: |
+          cmake --build build --target HarmonizerPluginTest --parallel 3
+          find build -name HarmonizerPluginTest -type f -perm -u+x -exec {} \;
+
+  # ---------------------------------------------------------------------------
+  android:
+    name: Android APK
     runs-on: ubuntu-latest
     needs: dsp-tests
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Set up the Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
       - name: Assemble
         run: ./gradlew assembleRelease --stacktrace
-
-      - name: Build the release payload
+      - name: Stage
         run: |
           mkdir -p out
-          # A fixed filename, so the app can point at a permalink that never
-          # changes. The version lives in version.json instead.
           cp app/build/outputs/apk/release/app-release.apk out/harmonizer.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  plugin-macos:
+    name: Plugin (macOS, AU + VST3)
+    runs-on: macos-14
+    needs: plugin-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: |
+          cmake -B build -S plugin -DCMAKE_BUILD_TYPE=Release \
+            -DHARMONIZER_BUILD_TESTS=OFF \
+            -DHARMONIZER_VERSION_CODE=${{ github.run_number }} \
+            -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }}
+      - name: Build AU and VST3
+        run: cmake --build build --target HarmonizerPlugin_AU HarmonizerPlugin_VST3 --parallel 3
+
+      - name: Sign and package
+        run: |
+          set -e
+          ART=build/HarmonizerPlugin_artefacts/Release
+          mkdir -p stage
+          cp -R "$ART/VST3/Harmonizer.vst3" stage/
+          cp -R "$ART/AU/Harmonizer.component" stage/
+
+          # Ad-hoc signature. Without any signature at all, Apple Silicon refuses
+          # to load the binary; this is not notarisation and does not clear
+          # Gatekeeper's quarantine flag on a browser download, which is what the
+          # bundled install script handles.
+          codesign --force --deep --sign - stage/Harmonizer.vst3
+          codesign --force --deep --sign - stage/Harmonizer.component
+          codesign --verify --verbose stage/Harmonizer.vst3
+          codesign --verify --verbose stage/Harmonizer.component
+
+          cp plugin/packaging/install-macos.command stage/
+          chmod +x stage/install-macos.command
+
+          # ditto rather than zip: it preserves the executable bit, and a plugin
+          # binary without it will not load.
+          mkdir -p out
+          ditto -c -k --sequesterRsrc stage out/Harmonizer-macOS.zip
+          ls -lh out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-macos
+          path: out/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  plugin-windows:
+    name: Plugin (Windows, VST3)
+    runs-on: windows-latest
+    needs: plugin-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: |
+          cmake -B build -S plugin -G "Visual Studio 17 2022" -A x64 `
+            -DHARMONIZER_BUILD_TESTS=OFF `
+            -DHARMONIZER_VERSION_CODE=${{ github.run_number }} `
+            -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }}
+      - name: Build VST3
+        run: cmake --build build --config Release --target HarmonizerPlugin_VST3 --parallel 3
+      - name: Package
+        shell: pwsh
+        run: |
+          $art = "build\HarmonizerPlugin_artefacts\Release\VST3\Harmonizer.vst3"
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item -Recurse -Force $art stage\
+          Copy-Item plugin\packaging\install-windows.bat stage\
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          # stage\* so the archive root holds Harmonizer.vst3 rather than its contents.
+          Compress-Archive -Path stage\* -DestinationPath out\Harmonizer-Windows.zip -Force
+          Get-ChildItem out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-windows
+          path: out/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # One job publishes everything, so the app and both plugin builds always land
+  # on the same release together and no two jobs race to recreate the tag.
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [android, plugin-macos, plugin-windows]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect and describe
+        run: |
+          mkdir -p out
+          cp artifacts/android/harmonizer.apk out/
+          cp artifacts/plugin-macos/Harmonizer-macOS.zip out/
+          cp artifacts/plugin-windows/Harmonizer-Windows.zip out/
 
           python3 - <<'PY'
           import hashlib, json, os, subprocess
 
-          apk = "out/harmonizer.apk"
           run = int(os.environ["GITHUB_RUN_NUMBER"])
-          notes = subprocess.run(
-              ["git", "log", "-1", "--pretty=%s"],
-              capture_output=True, text=True, check=True).stdout.strip()
+          notes = subprocess.run(["git", "log", "-1", "--pretty=%s"],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+          commit = os.environ["GITHUB_SHA"][:7]
 
-          # json.dump handles quoting, so a commit subject with quotes or
-          # backslashes in it cannot produce a manifest the app fails to parse.
-          manifest = {
-              "versionCode": 100 + run,
-              "versionName": f"1.0.{run}",
-              "commit": os.environ["GITHUB_SHA"][:7],
-              "sizeBytes": os.path.getsize(apk),
-              "sha256": hashlib.sha256(open(apk, "rb").read()).hexdigest(),
-              "notes": notes,
-          }
+          def describe(path):
+              return {
+                  "file": os.path.basename(path),
+                  "sizeBytes": os.path.getsize(path),
+                  "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest(),
+              }
+
+          # The Android app polls this one.
+          apk = describe("out/harmonizer.apk")
           with open("out/version.json", "w") as f:
-              json.dump(manifest, f, indent=2)
-          print(json.dumps(manifest, indent=2))
+              json.dump({"versionCode": 100 + run, "versionName": f"1.0.{run}",
+                         "commit": commit, "notes": notes, **apk}, f, indent=2)
+
+          # The plugin polls this one; it needs a download per platform.
+          with open("out/plugin-version.json", "w") as f:
+              json.dump({"versionCode": run, "versionName": f"1.0.{run}",
+                         "commit": commit, "notes": notes,
+                         "assets": {"macos": describe("out/Harmonizer-macOS.zip"),
+                                    "windows": describe("out/Harmonizer-Windows.zip")}},
+                        f, indent=2)
+
+          print(open("out/version.json").read())
+          print(open("out/plugin-version.json").read())
           PY
 
-      - name: Upload as a workflow artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: harmonizer-apk
+          name: release-payload
           path: out/*
-          if-no-files-found: error
 
-      # A release asset is a plain download link, which is what lets the in-app
-      # updater fetch it with no credentials, and what lets you install straight
-      # from the phone's browser.
       - name: Publish to the "latest" release
-        if: >-
-          github.event_name != 'pull_request' &&
-          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest out/harmonizer.apk out/version.json \
+          gh release create latest \
+            out/harmonizer.apk out/version.json \
+            out/Harmonizer-macOS.zip out/Harmonizer-Windows.zip out/plugin-version.json \
             --title "v1.0.${GITHUB_RUN_NUMBER}" \
             --notes "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA::7}.
 
-          Already have the app installed? Open Settings inside it and tap
-          **Check for updates** -- no need to download anything by hand.
+          **Already installed?** Tap **Check for updates** in the Android app's
+          Settings, or press **Check for updates** in the plugin. No manual
+          download needed.
 
-          Installing for the first time: download \`harmonizer.apk\` below and open it."
+          **Android** — download \`harmonizer.apk\` and open it.
+
+          **Plugin (Logic, FL Studio, any DAW)** — download the archive for your
+          system and run the install script inside it:
+          \`Harmonizer-macOS.zip\` (Audio Unit + VST3, Apple Silicon and Intel)
+          or \`Harmonizer-Windows.zip\` (VST3, 64-bit)."

@@ -1,0 +1,5 @@
+# Batch files must keep CRLF or older Windows shells mis-parse them.
+*.bat text eol=crlf
+*.command text eol=lf
+*.jks binary
+*.apk binary
