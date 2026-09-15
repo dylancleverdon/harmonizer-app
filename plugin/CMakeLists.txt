@@ -28,13 +28,21 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# Ask only for what this platform can produce. JUCE filters unsupported formats
+# silently, but being explicit keeps the intent visible.
+if(APPLE)
+    set(HARMONIZER_FORMATS AU VST3 Standalone)
+else()
+    set(HARMONIZER_FORMATS VST3 Standalone)
+endif()
+
 juce_add_plugin(HarmonizerPlugin
         PRODUCT_NAME "Harmonizer"
         COMPANY_NAME "Dylan Cleverdon"
         BUNDLE_ID com.dylan.harmonizer.plugin
         PLUGIN_MANUFACTURER_CODE Dylc
         PLUGIN_CODE Hrmz
-        FORMATS AU VST3 Standalone
+        FORMATS ${HARMONIZER_FORMATS}
 
         # Not a synth: it processes incoming audio. But it does need MIDI, and
         # that combination is what makes the AU a "music effect" (aumf) rather
@@ -45,7 +53,7 @@ juce_add_plugin(HarmonizerPlugin
         NEEDS_MIDI_OUTPUT FALSE
         IS_MIDI_EFFECT FALSE
         AU_MAIN_TYPE kAudioUnitType_MusicEffect
-        VST3_CATEGORIES Fx Pitch\ Shift
+        VST3_CATEGORIES "Fx" "Pitch Shift"
 
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
         COPY_PLUGIN_AFTER_BUILD FALSE)
@@ -58,13 +66,14 @@ target_sources(HarmonizerPlugin PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
         Source/PluginUpdater.cpp
+        Shared/HarmonizerInstall.cpp
         ${DSP_DIR}/Fft.cpp
         ${DSP_DIR}/Resampler.cpp
         ${DSP_DIR}/Analysis.cpp
         ${DSP_DIR}/Voices.cpp
         ${DSP_DIR}/Harmonizer.cpp)
 
-target_include_directories(HarmonizerPlugin PRIVATE ${DSP_DIR} Source)
+target_include_directories(HarmonizerPlugin PRIVATE ${DSP_DIR} Source Shared)
 
 target_compile_definitions(HarmonizerPlugin PUBLIC
         JUCE_WEB_BROWSER=0
@@ -108,13 +117,14 @@ if(HARMONIZER_BUILD_TESTS)
             Source/PluginProcessor.cpp
             Source/PluginEditor.cpp
             Source/PluginUpdater.cpp
+            Shared/HarmonizerInstall.cpp
             ${DSP_DIR}/Fft.cpp
             ${DSP_DIR}/Resampler.cpp
             ${DSP_DIR}/Analysis.cpp
             ${DSP_DIR}/Voices.cpp
             ${DSP_DIR}/Harmonizer.cpp)
 
-    target_include_directories(HarmonizerPluginTest PRIVATE ${DSP_DIR} Source)
+    target_include_directories(HarmonizerPluginTest PRIVATE ${DSP_DIR} Source Shared)
 
     target_compile_definitions(HarmonizerPluginTest PUBLIC
             JUCE_WEB_BROWSER=0
@@ -137,3 +147,39 @@ if(HARMONIZER_BUILD_TESTS)
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
 endif()
+
+# ---------------------------------------------------------------------------
+# Harmonizer Setup: the guided installer and updater. Intended to be the only
+# thing a non-technical user ever has to run -- it installs the plugins, then
+# stays put so future updates are one button.
+# ---------------------------------------------------------------------------
+juce_add_gui_app(HarmonizerSetup
+        PRODUCT_NAME "Harmonizer Setup"
+        COMPANY_NAME "Dylan Cleverdon"
+        BUNDLE_ID com.dylan.harmonizer.setup)
+
+target_sources(HarmonizerSetup PRIVATE
+        Setup/SetupApp.cpp
+        Shared/HarmonizerInstall.cpp)
+
+target_include_directories(HarmonizerSetup PRIVATE Setup Shared)
+
+target_compile_definitions(HarmonizerSetup PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=1
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_REPORT_APP_USAGE=0
+        JUCE_STANDALONE_APPLICATION=1
+        HARMONIZER_VERSION_CODE=${HARMONIZER_VERSION_CODE}
+        HARMONIZER_VERSION_NAME="${HARMONIZER_VERSION_NAME}")
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(HarmonizerSetup PRIVATE CURL::libcurl)
+endif()
+
+target_link_libraries(HarmonizerSetup PRIVATE
+        juce::juce_gui_extra
+        juce::juce_cryptography
+        PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)

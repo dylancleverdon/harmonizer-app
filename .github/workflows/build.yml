@@ -61,8 +61,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
+      - name: Accept Android SDK licences
+        # The runner image already has the SDK. Fetching command-line tools from
+        # Google is an extra network dependency that has failed here before, so
+        # use what is installed and let Gradle pull anything else it needs.
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
       - name: Assemble
         run: ./gradlew assembleRelease --stacktrace
       - name: Stage
@@ -88,8 +94,10 @@ jobs:
             -DHARMONIZER_BUILD_TESTS=OFF \
             -DHARMONIZER_VERSION_CODE=${{ github.run_number }} \
             -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }}
-      - name: Build AU and VST3
-        run: cmake --build build --target HarmonizerPlugin_AU HarmonizerPlugin_VST3 --parallel 3
+      - name: Build AU, VST3 and the Setup app
+        run: |
+          cmake --build build --target HarmonizerPlugin_AU HarmonizerPlugin_VST3 \
+            HarmonizerSetup --parallel 3
 
       - name: Sign and package
         run: |
@@ -115,6 +123,15 @@ jobs:
           # binary without it will not load.
           mkdir -p out
           ditto -c -k --sequesterRsrc stage out/Harmonizer-macOS.zip
+
+          # The guided installer, shipped on its own: this is what the download
+          # page hands people, and the only thing most users ever run.
+          SETUP="build/HarmonizerSetup_artefacts/Release/Harmonizer Setup.app"
+          codesign --force --deep --sign - "$SETUP"
+          codesign --verify --verbose "$SETUP"
+          mkdir -p setupstage
+          cp -R "$SETUP" setupstage/
+          ditto -c -k --sequesterRsrc setupstage out/HarmonizerSetup-macOS.zip
           ls -lh out/
       - uses: actions/upload-artifact@v4
         with:
@@ -129,14 +146,41 @@ jobs:
     needs: plugin-tests
     steps:
       - uses: actions/checkout@v4
+      - name: Allow long paths
+        # JUCE's tree is deep and the runner's workspace path is already long;
+        # without this, checkout and configure can trip the 260-character limit.
+        run: git config --system core.longpaths true
+
       - name: Configure
+        shell: pwsh
         run: |
           cmake -B build -S plugin -G "Visual Studio 17 2022" -A x64 `
             -DHARMONIZER_BUILD_TESTS=OFF `
             -DHARMONIZER_VERSION_CODE=${{ github.run_number }} `
-            -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }}
-      - name: Build VST3
-        run: cmake --build build --config Release --target HarmonizerPlugin_VST3 --parallel 3
+            -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }} 2>&1 |
+            Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            "## CMake configure failed" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            Get-Content configure.log -Tail 80 | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
+
+      - name: Build VST3 and the Setup app
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target HarmonizerPlugin_VST3 HarmonizerSetup `
+            --parallel 3 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            "## Windows build failed" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            Select-String -Path build.log -Pattern 'error|Error' |
+              Select-Object -Last 40 | ForEach-Object { $_.Line } |
+              Out-File -Append $env:GITHUB_STEP_SUMMARY
+            '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
       - name: Package
         shell: pwsh
         run: |
@@ -147,6 +191,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path out | Out-Null
           # stage\* so the archive root holds Harmonizer.vst3 rather than its contents.
           Compress-Archive -Path stage\* -DestinationPath out\Harmonizer-Windows.zip -Force
+
+          # A bare .exe rather than a zip: one file, double-click, done.
+          Copy-Item "build\HarmonizerSetup_artefacts\Release\Harmonizer Setup.exe" `
+            out\HarmonizerSetup.exe
           Get-ChildItem out
       - uses: actions/upload-artifact@v4
         with:
@@ -174,7 +222,9 @@ jobs:
           mkdir -p out
           cp artifacts/android/harmonizer.apk out/
           cp artifacts/plugin-macos/Harmonizer-macOS.zip out/
+          cp artifacts/plugin-macos/HarmonizerSetup-macOS.zip out/
           cp artifacts/plugin-windows/Harmonizer-Windows.zip out/
+          cp artifacts/plugin-windows/HarmonizerSetup.exe out/
 
           python3 - <<'PY'
           import hashlib, json, os, subprocess
@@ -221,6 +271,7 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest \
             out/harmonizer.apk out/version.json \
+            out/HarmonizerSetup-macOS.zip out/HarmonizerSetup.exe \
             out/Harmonizer-macOS.zip out/Harmonizer-Windows.zip out/plugin-version.json \
             --title "v1.0.${GITHUB_RUN_NUMBER}" \
             --notes "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA::7}.
@@ -229,9 +280,35 @@ jobs:
           Settings, or press **Check for updates** in the plugin. No manual
           download needed.
 
-          **Android** — download \`harmonizer.apk\` and open it.
+          **Setting up for the first time?** Use the guided page:
+          https://dylancleverdon.github.io/harmonizer-app/
 
-          **Plugin (Logic, FL Studio, any DAW)** — download the archive for your
-          system and run the install script inside it:
-          \`Harmonizer-macOS.zip\` (Audio Unit + VST3, Apple Silicon and Intel)
-          or \`Harmonizer-Windows.zip\` (VST3, 64-bit)."
+          **Plugin** — \`HarmonizerSetup-macOS.zip\` or \`HarmonizerSetup.exe\`
+          installs everything and handles future updates.
+          **Android** — \`harmonizer.apk\`.
+
+          The plain \`Harmonizer-macOS.zip\` / \`Harmonizer-Windows.zip\` archives
+          hold just the plugin bundles, for installing by hand."
+
+  # ---------------------------------------------------------------------------
+  pages:
+    name: Download page
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

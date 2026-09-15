@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harmonizer — download &amp; setup</title>
+<style>
+  :root {
+    --bg: #0e1113; --surface: #171b1e; --surface2: #1f2529;
+    --line: #2a3237; --text: #e3e6e8; --muted: #a8b4b8;
+    --accent: #4dd0c0; --accent-dim: #2a7d74; --warn: #e8a33d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.4px; }
+  .tag { color: var(--muted); margin: 0 0 28px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1.2px;
+       color: var(--muted); margin: 0 0 14px; font-weight: 600; }
+  .step { background: var(--surface); border: 1px solid var(--line);
+          border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+  .num { display: inline-flex; width: 22px; height: 22px; border-radius: 11px;
+         background: var(--accent); color: #00201c; font-size: 13px; font-weight: 700;
+         align-items: center; justify-content: center; margin-right: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip { border: 1px solid var(--line); background: var(--surface2); color: var(--text);
+          border-radius: 999px; padding: 9px 16px; cursor: pointer; font-size: 15px;
+          user-select: none; transition: .12s; }
+  .chip:hover { border-color: var(--accent-dim); }
+  .chip[aria-pressed="true"] { background: var(--accent); color: #00201c;
+                               border-color: var(--accent); font-weight: 600; }
+  .dl { display: block; text-align: center; background: var(--accent); color: #00201c;
+        font-weight: 700; font-size: 18px; text-decoration: none; padding: 16px;
+        border-radius: 10px; margin: 4px 0 10px; }
+  .dl:hover { filter: brightness(1.08); }
+  .dl small { display: block; font-weight: 500; font-size: 13px; opacity: .75; margin-top: 3px; }
+  .note { color: var(--muted); font-size: 14px; }
+  .warn { border-left: 3px solid var(--warn); background: rgba(232,163,61,.09);
+          padding: 12px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; font-size: 14px; }
+  .warn b { color: var(--warn); }
+  ol.steps { padding-left: 22px; margin: 8px 0 0; }
+  ol.steps li { margin-bottom: 7px; }
+  .guide { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
+  .guide:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .guide h3 { font-size: 16px; margin: 0 0 8px; color: var(--accent); }
+  code { background: var(--surface2); padding: 2px 6px; border-radius: 4px;
+         font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .hidden { display: none; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: 13px; margin-top: 32px; text-align: center; }
+  .switch { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .switch a { cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Harmonizer</h1>
+  <p class="tag">Sing or play into it, hold chords on a keyboard, hear the harmonies.
+     This page sets you up in about a minute.</p>
+
+  <div class="step">
+    <h2><span class="num">1</span>Where are you installing it?</h2>
+    <div class="chips" id="os-chips">
+      <button class="chip" data-os="mac" aria-pressed="false">Mac</button>
+      <button class="chip" data-os="win" aria-pressed="false">Windows</button>
+      <button class="chip" data-os="android" aria-pressed="false">Android phone</button>
+    </div>
+    <p class="switch" id="detected"></p>
+  </div>
+
+  <div class="step" id="daw-step">
+    <h2><span class="num">2</span>Which music software do you use?</h2>
+    <div class="chips" id="daw-chips">
+      <button class="chip" data-daw="logic" aria-pressed="false">Logic Pro</button>
+      <button class="chip" data-daw="ableton" aria-pressed="false">Ableton Live</button>
+      <button class="chip" data-daw="flstudio" aria-pressed="false">FL Studio</button>
+      <button class="chip" data-daw="other" aria-pressed="false">Something else</button>
+    </div>
+    <p class="note" style="margin-bottom:0;margin-top:12px">
+      Pick as many as you like. This only changes the instructions at the end —
+      the installer puts on everything either way.</p>
+  </div>
+
+  <div class="step">
+    <h2><span class="num">3</span>Download</h2>
+    <div id="download-area"></div>
+  </div>
+
+  <div class="step" id="open-step">
+    <h2><span class="num">4</span>Open it</h2>
+    <div id="open-area"></div>
+  </div>
+
+  <div class="step" id="routing-step">
+    <h2><span class="num">5</span>Getting sound and notes into it</h2>
+    <div id="routing-area">
+      <p class="note">Choose your software above and the steps will appear here.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <h2>Updating later</h2>
+    <div id="update-area"></div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/dylancleverdon/harmonizer-app/releases/latest">All downloads</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/dylancleverdon/harmonizer-app">Source</a>
+  </footer>
+</div>
+
+<script>
+const BASE = "https://github.com/dylancleverdon/harmonizer-app/releases/latest/download";
+let os = null;
+const daws = new Set();
+
+function detectOs() {
+  const ua = navigator.userAgent;
+  if (/Android/i.test(ua)) return "android";
+  if (/Macintosh|Mac OS X/i.test(ua)) return "mac";
+  if (/Windows/i.test(ua)) return "win";
+  return null;
+}
+
+const GUIDES = {
+  logic: { name: "Logic Pro", steps: [
+    "Make a <b>Software Instrument</b> track.",
+    "In its Instrument slot choose <code>AU MIDI-controlled Effects &rsaquo; Dylan Cleverdon &rsaquo; Harmonizer</code>.",
+    "At the top of the plugin window set <b>Side Chain</b> to the audio track your voice or horn is on.",
+    "Play that instrument track's keyboard. Your audio arrives through the side chain; the notes become the harmonies."
+  ]},
+  ableton: { name: "Ableton Live", steps: [
+    "Drop Harmonizer onto the <b>audio track</b> carrying your voice or horn.",
+    "Make a new <b>MIDI track</b>.",
+    "Set that MIDI track's <b>MIDI To</b> to the audio track, then pick Harmonizer underneath it.",
+    "Arm the MIDI track and play. If Harmonizer isn't offered as a destination, try the Audio Unit version instead of the VST3 — both get installed."
+  ]},
+  flstudio: { name: "FL Studio", steps: [
+    "Add Harmonizer to the <b>mixer insert</b> your audio runs through.",
+    "Click the plugin's gear icon, and under <b>MIDI</b> set an <b>Input port</b> — say <code>1</code>.",
+    "In the Channel Rack add a <b>MIDI Out</b> channel and set its port to the same number.",
+    "Play or draw notes on that MIDI Out channel."
+  ]},
+  other: { name: "Any other DAW", steps: [
+    "Put Harmonizer on the track carrying your voice or horn.",
+    "Route a MIDI track or your keyboard <i>to that plugin</i>.",
+    "Look for wording like &ldquo;MIDI-controlled effect&rdquo;, &ldquo;receive notes&rdquo;, or a MIDI destination chooser."
+  ]}
+};
+
+function render() {
+  document.querySelectorAll("#os-chips .chip").forEach(c =>
+    c.setAttribute("aria-pressed", String(c.dataset.os === os)));
+  document.querySelectorAll("#daw-chips .chip").forEach(c =>
+    c.setAttribute("aria-pressed", String(daws.has(c.dataset.daw))));
+
+  const isPhone = os === "android";
+  document.getElementById("daw-step").classList.toggle("hidden", isPhone || !os);
+  document.getElementById("routing-step").classList.toggle("hidden", isPhone || !os);
+
+  const dl = document.getElementById("download-area");
+  const open = document.getElementById("open-area");
+  const upd = document.getElementById("update-area");
+
+  if (!os) {
+    dl.innerHTML = '<p class="note">Pick where you are installing it, above.</p>';
+    open.innerHTML = '<p class="note">&nbsp;</p>';
+    upd.innerHTML = '<p class="note">&nbsp;</p>';
+    return;
+  }
+
+  if (isPhone) {
+    dl.innerHTML =
+      `<a class="dl" href="${BASE}/harmonizer.apk">Download for Android<small>harmonizer.apk</small></a>
+       <p class="note">Download this on the phone itself, then tap it to install.</p>`;
+    open.innerHTML =
+      `<div class="warn"><b>Android will warn you.</b> It'll ask permission to install from your
+        browser — allow it. Play Protect may say the developer isn't recognised: tap
+        <b>More details &rsaquo; Install anyway</b>. That's normal for an app installed outside
+        the Play Store.</div>
+       <ol class="steps">
+         <li>Open the downloaded file and install it.</li>
+         <li>Open Harmonizer and allow microphone access.</li>
+         <li><b>Put headphones on</b> before pressing Start — the mic and speaker will feed back otherwise.</li>
+         <li>Plug a MIDI keyboard into the USB-C port and press <b>Rescan</b>.</li>
+       </ol>`;
+    upd.innerHTML =
+      `<p>Open the app, go to <b>Settings &rsaquo; Updates</b>, tap <b>Check for updates</b>.
+        It downloads and installs itself. You never need this page again.</p>`;
+    return;
+  }
+
+  const mac = os === "mac";
+  const file = mac ? "HarmonizerSetup-macOS.zip" : "HarmonizerSetup.exe";
+  const label = mac ? "Download for Mac" : "Download for Windows";
+
+  dl.innerHTML =
+    `<a class="dl" href="${BASE}/${file}">${label}<small>${file}</small></a>
+     <p class="note">One file. It installs the plugin for every DAW on this computer, and
+       stays put so future updates are a single button.</p>`;
+
+  if (mac) {
+    open.innerHTML =
+      `<div class="warn"><b>macOS will refuse to open it the first time.</b> That's because
+        it isn't signed by a paid Apple developer account — not because anything is wrong.
+        <b>Right-click</b> (or Control-click) <b>Harmonizer Setup</b> and choose <b>Open</b>,
+        then <b>Open</b> again in the dialog. You only ever do this once.</div>
+       <ol class="steps">
+         <li>Unzip the download if your browser hasn't already.</li>
+         <li>Right-click <b>Harmonizer Setup</b> &rsaquo; <b>Open</b> &rsaquo; <b>Open</b>.</li>
+         <li>Tick your music software, press <b>Install Harmonizer</b>.</li>
+         <li><b>Quit your DAW completely and reopen it</b> so it finds the plugin.</li>
+       </ol>`;
+  } else {
+    open.innerHTML =
+      `<div class="warn"><b>Windows will show a blue warning.</b> &ldquo;Windows protected your
+        PC&rdquo; appears for any program without a paid signing certificate. Click
+        <b>More info</b>, then <b>Run anyway</b>. Once only.</div>
+       <ol class="steps">
+         <li>Run <b>HarmonizerSetup.exe</b>.</li>
+         <li>Click <b>More info</b> &rsaquo; <b>Run anyway</b> if the blue screen appears.</li>
+         <li>Tick your music software, press <b>Install Harmonizer</b>.</li>
+         <li><b>Close your DAW completely and reopen it</b>, then rescan plugins.</li>
+       </ol>`;
+  }
+
+  upd.innerHTML =
+    `<p>Two ways, both one click:</p>
+     <ol class="steps">
+       <li><b>Inside the plugin</b> — press <b>Check for updates</b> in the Harmonizer window,
+           then restart your DAW.</li>
+       <li><b>Harmonizer Setup</b> — open it again${mac
+            ? " from your Applications folder"
+            : " from the Start menu"}; it says whether a new version is out and updates
+           with one button.</li>
+     </ol>
+     <p class="note">Either way you won't need to come back to this page or hunt for
+       downloads again.</p>`;
+
+  const area = document.getElementById("routing-area");
+  if (daws.size === 0) {
+    area.innerHTML = '<p class="note">Choose your software above and the steps will appear here.</p>';
+  } else {
+    let html = `<p class="note">Harmonizer is an <b>audio effect that listens for notes</b>, not an
+      instrument. The audio is your voice or horn; the notes choose the harmonies. That's the
+      bit that trips people up.</p>`;
+    ["logic","ableton","flstudio","other"].forEach(k => {
+      if (!daws.has(k)) return;
+      const g = GUIDES[k];
+      html += `<div class="guide"><h3>${g.name}</h3><ol class="steps">` +
+              g.steps.map(s => `<li>${s}</li>`).join("") + `</ol></div>`;
+    });
+    html += `<div class="warn" style="margin-top:16px"><b>Nothing happening?</b> Open the
+      plugin window and play some notes. The voice counter tells you straight away: if it
+      stays at <b>0</b>, the notes aren't reaching the plugin and the routing is what needs
+      fixing — not the audio.</div>`;
+    area.innerHTML = html;
+  }
+}
+
+document.getElementById("os-chips").addEventListener("click", e => {
+  const c = e.target.closest(".chip"); if (!c) return;
+  os = c.dataset.os; render();
+});
+document.getElementById("daw-chips").addEventListener("click", e => {
+  const c = e.target.closest(".chip"); if (!c) return;
+  const k = c.dataset.daw;
+  daws.has(k) ? daws.delete(k) : daws.add(k);
+  render();
+});
+
+os = detectOs();
+const d = document.getElementById("detected");
+d.innerHTML = os
+  ? `Detected automatically — <a onclick="os=null;render();this.parentElement.innerHTML='Pick one above.'">not right?</a>`
+  : "Pick one above.";
+render();
+</script>
+</body>
+</html>

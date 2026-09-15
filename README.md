@@ -17,19 +17,30 @@ All processing is local. Nothing is uploaded.
 
 ---
 
-## Downloads
+## Start here
 
-Everything lives on one page:
-**https://github.com/dylancleverdon/harmonizer-app/releases/latest**
+**https://dylancleverdon.github.io/harmonizer-app/**
+
+A page that works out which computer you are on, asks which music software you
+use, hands you the one file you need, and tells you exactly what to click when
+your operating system inevitably warns you about an unsigned app. Send that link
+to anyone you want to give this to.
+
+If you would rather grab files directly:
 
 | You want | Download | Then |
 |---|---|---|
 | The phone app | `harmonizer.apk` | Open it on the phone |
-| The plugin, macOS | `Harmonizer-macOS.zip` | Run `install-macos.command` inside |
-| The plugin, Windows | `Harmonizer-Windows.zip` | Run `install-windows.bat` inside |
+| The plugin, Mac | `HarmonizerSetup-macOS.zip` | Right-click the app, Open |
+| The plugin, Windows | `HarmonizerSetup.exe` | Run it |
+| Plugin files only | `Harmonizer-macOS.zip` / `Harmonizer-Windows.zip` | Install by hand |
 
-Both the app and the plugin update themselves from that page — there is a
-**Check for updates** button in each, so this is a one-time download.
+Everything is on the
+[latest release](https://github.com/dylancleverdon/harmonizer-app/releases/latest).
+
+**Harmonizer Setup** is the guided installer. It installs the plugin wherever
+your DAWs look, explains MIDI routing for the DAWs you pick, and copies itself
+somewhere permanent so every future update is one button in that same window.
 
 ## Getting it onto the phone
 
@@ -342,7 +353,10 @@ plugin/
   CMakeLists.txt  JUCE build for AU, VST3 and standalone
   Source/         processor, editor, in-plugin updater
   Tests/          headless checks on the wrapper (parameters, MIDI, latency)
+  Setup/          the guided installer and updater app
+  Shared/         install logic shared by the installer and the in-plugin updater
   packaging/      the install scripts shipped inside each archive
+site/             the download page, published to GitHub Pages by CI
 ```
 
 `dsp/` deliberately has no Android dependency, which is what lets the hard part be

@@ -2,18 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
-#ifndef HARMONIZER_VERSION_CODE
-#define HARMONIZER_VERSION_CODE 0
-#endif
-
-#ifndef HARMONIZER_VERSION_NAME
-#define HARMONIZER_VERSION_NAME "dev"
-#endif
-
-#ifndef HARMONIZER_UPDATE_BASE
-#define HARMONIZER_UPDATE_BASE \
-    "https://github.com/dylancleverdon/harmonizer-app/releases/latest/download"
-#endif
+#include "HarmonizerInstall.h"
 
 /**
  * Checks the project's releases page for a newer plugin build, downloads it, and
@@ -70,13 +59,6 @@ private:
     void run() override;
     bool doCheck(juce::String& error);
     bool doInstall(juce::String& error);
-
-    bool downloadTo(const juce::String& url, const juce::File& dest,
-                    juce::int64 expectedBytes, juce::String& error);
-    static bool extract(const juce::File& archive, const juce::File& destDir, juce::String& error);
-    static bool replaceBundle(const juce::File& installed, const juce::File& fresh,
-                              juce::String& error);
-    static juce::Array<juce::File> installTargets();
 
     void setStage(Stage stage, const juce::String& message);
     void setProgress(double progress);
