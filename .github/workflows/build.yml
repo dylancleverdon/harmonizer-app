@@ -163,11 +163,17 @@ jobs:
         shell: bash
         run: |
           set +e
-          cmake -B build -S plugin -G "Visual Studio 17 2022" -A x64 \
+          # No -G: pin a Visual Studio version and the build breaks the moment
+          # GitHub rolls the runner image to a newer one, which is exactly what
+          # happened here. CMake picks whichever Visual Studio is actually
+          # installed, and VS generators default to the host architecture.
+          cmake -B build -S plugin \
             -DHARMONIZER_BUILD_TESTS=OFF \
             -DHARMONIZER_VERSION_CODE=${{ github.run_number }} \
             -DHARMONIZER_VERSION_NAME=1.0.${{ github.run_number }} 2>&1 | tee configure.log
           status=${PIPESTATUS[0]}
+          generator=$(grep -m1 "^CMAKE_GENERATOR:INTERNAL=" build/CMakeCache.txt 2>/dev/null | cut -d= -f2-)
+          echo "::notice::CMake used generator: ${generator:-unknown} (cmake $(cmake --version | head -1))"
           if [ "$status" -ne 0 ]; then
             echo "::error::CMake configure failed on Windows (exit $status)"
             tail -n 40 configure.log | while IFS= read -r line; do
@@ -194,6 +200,19 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          $dll = Get-ChildItem -Recurse -Filter Harmonizer.vst3 `
+            build\HarmonizerPlugin_artefacts\Release\VST3 | Where-Object { -not $_.PSIsContainer }
+          if ($dll) {
+            # Nothing pins the architecture any more, so check rather than assume.
+            $bytes = [System.IO.File]::ReadAllBytes($dll.FullName)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            Write-Host ("PE machine type: 0x{0:X4}" -f $machine)
+            if ($machine -ne 0x8664) {
+              Write-Host "::error::Built plugin is not x64 (machine 0x$($machine.ToString('X4')))"
+              exit 1
+            }
+          }
           $art = "build\HarmonizerPlugin_artefacts\Release\VST3\Harmonizer.vst3"
           New-Item -ItemType Directory -Force -Path stage | Out-Null
           Copy-Item -Recurse -Force $art stage\
