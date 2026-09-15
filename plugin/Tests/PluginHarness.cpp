@@ -109,6 +109,74 @@ std::vector<float> render(HarmonizerAudioProcessor& p, double sr, int blockSize,
 
 }  // namespace
 
+
+// The bug this covers: with no side-chain bus declared, Logic had nowhere to
+// route audio when the plugin sits in an instrument slot, and the plugin sat
+// silent -- dry included, which is what made it look completely broken.
+static void testSidechainInput() {
+    std::printf("\n-- Audio arriving only on the side chain --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    HarmonizerAudioProcessor p;
+
+    juce::AudioProcessor::BusesLayout layout;
+    layout.inputBuses.add(juce::AudioChannelSet::disabled());   // as in an instrument slot
+    layout.inputBuses.add(juce::AudioChannelSet::mono());       // side chain carries the audio
+    layout.outputBuses.add(juce::AudioChannelSet::stereo());
+
+    const bool accepted = p.setBusesLayout(layout);
+    check(accepted, "host may disable the main input and feed the side chain instead");
+    if (!accepted) return;
+
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setChoice(p, HarmonizerAudioProcessor::ParamId::harmonyMode, 0);
+    setValue(p, HarmonizerAudioProcessor::ParamId::formant, 0.0f);
+    p.prepareToPlay(sr, 256);
+
+    const int total = static_cast<int>(sr * 1.0);
+    std::vector<float> source(static_cast<size_t>(total));
+    makeVoice(source, f0, sr);
+    std::vector<float> out(static_cast<size_t>(total), 0.0f);
+
+    const int channels = juce::jmax(p.getTotalNumInputChannels(), p.getTotalNumOutputChannels());
+    juce::AudioBuffer<float> buffer(channels, 256);
+    bool sent = false;
+
+    for (int pos = 0; pos < total; pos += 256) {
+        const int n = juce::jmin(256, total - pos);
+        buffer.setSize(channels, n, false, false, true);
+        buffer.clear();
+
+        // Write into whichever channel the side-chain bus actually occupies.
+        auto side = p.getBusBuffer(buffer, true, 1);
+        for (int ch = 0; ch < side.getNumChannels(); ++ch) {
+            juce::FloatVectorOperations::copy(side.getWritePointer(ch), source.data() + pos, n);
+        }
+
+        juce::MidiBuffer midi;
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 64, 0.8f), 0); sent = true; }
+        p.processBlock(buffer, midi);
+        juce::FloatVectorOperations::copy(out.data() + pos, buffer.getReadPointer(0), n);
+    }
+
+    const auto t = p.traffic();
+    char msg[220];
+    std::snprintf(msg, sizeof(msg),
+                  "side chain reported as %d channel(s), peak %.3f; main reported %d",
+                  t.sideChannels, t.sidePeak, t.mainChannels);
+    check(t.sideChannels > 0 && t.sidePeak > 0.01f && t.mainChannels == 0, msg);
+
+    const double want = f0 * std::pow(2.0, 4.0 / 12.0);
+    const double got = dominantFreq(out.data(), static_cast<int>(out.size()), sr);
+    float peak = 0.0f;
+    for (float v : out) peak = std::max(peak, std::fabs(v));
+    std::snprintf(msg, sizeof(msg),
+                  "harmony still produced: peak %.3f, %7.2f Hz (want %7.2f, %+5.1f cents)",
+                  peak, got, want, centsErr(got, want));
+    check(peak > 0.02f && std::fabs(centsErr(got, want)) < 15.0, msg);
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("=============================================\n");
@@ -243,6 +311,8 @@ int main() {
               juce::String("both channels identical (peak ") + juce::String(peak, 3) +
                   ", max L/R difference " + juce::String(maxDiff, 9) + ")");
     }
+
+    testSidechainInput();
 
     std::printf("\n=============================================\n");
     if (g_failures == 0) std::printf(" ALL PLUGIN CHECKS PASSED\n");

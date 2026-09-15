@@ -41,17 +41,19 @@ chooses the harmonies. It declares itself an AU *music effect* (`aumf`)
 specifically so a DAW will let you send it notes — a plain effect cannot receive
 them.
 
-* **Logic Pro** — put Harmonizer on your audio track's **Audio FX**. It appears
-  under the MIDI-controlled effects. Create a software instrument track, and in
-  its instrument slot pick Harmonizer's *side-chain* MIDI destination; playing
-  that track's keyboard then drives the harmonies.
+* **Logic Pro** — make a **Software Instrument** track and pick Harmonizer in its
+  Instrument slot, under *AU MIDI-controlled Effects*. The track itself carries no
+  audio, so set **Side Chain** at the top of the plugin window to the track your
+  voice or horn is on. Play that instrument track's keyboard to drive the
+  harmonies.
 * **FL Studio** — add Harmonizer to the mixer insert carrying your audio. Open
   its wrapper settings, enable **Receive notes**, and route a pattern or your
   keyboard to it from the channel rack.
 
-If you hear your dry signal but no harmonies, MIDI is not reaching the plugin.
-The voice counter in the plugin window tells you directly: if it stays at 0 while
-you play, the notes are not arriving.
+The Signal card at the top of the plugin window answers this directly. It meters
+the track input and the side chain **separately**, shows whether any MIDI has
+arrived, counts the sounding voices, and names the likely problem in words. If
+the side chain reads *not connected* in Logic, that is the routing to fix.
 
 ## Updating
 

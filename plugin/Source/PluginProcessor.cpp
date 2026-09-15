@@ -39,6 +39,12 @@ const juce::StringArray HarmonizerAudioProcessor::kFftChoices { "256", "512", "1
 HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                         // Logic hosts a MIDI-controlled effect in an instrument
+                         // slot, where the track itself carries no audio and the
+                         // signal arrives on the side chain instead. Without this
+                         // bus there is nothing for Logic to route into, and the
+                         // plugin sits there silent -- dry included.
+                         .withInput("Sidechain", juce::AudioChannelSet::stereo(), false)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "state", createLayout()) {
     // Sweep up any bundle left behind by a previous in-place update. Once per
@@ -69,13 +75,21 @@ HarmonizerAudioProcessor::createLayout() {
     using namespace juce;
     AudioProcessorValueTreeState::ParameterLayout layout;
 
+    // Step sizes and display text are set here rather than only on the sliders,
+    // so the host's own generic parameter panel reads the same way -- and so
+    // neither shows a mix of 0.4999999.
+    const auto percent = AudioParameterFloatAttributes().withStringFromValueFunction(
+        [](float v, int) { return juce::String(juce::roundToInt(v * 100.0f)) + " %"; });
+
     layout.add(std::make_unique<AudioParameterFloat>(
         ParameterID{ParamId::wetDry, 1}, "Wet / Dry",
-        NormalisableRange<float>(0.0f, 1.0f), 0.5f));
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, percent));
 
     layout.add(std::make_unique<AudioParameterFloat>(
         ParameterID{ParamId::outputGain, 1}, "Output Gain",
-        NormalisableRange<float>(0.0f, 2.0f), 1.0f));
+        NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction(
+            [](float v, int) { return juce::String(v, 2) + " x"; })));
 
     layout.add(std::make_unique<AudioParameterChoice>(
         ParameterID{ParamId::harmonyMode, 1}, "Harmony Mode",
@@ -94,7 +108,7 @@ HarmonizerAudioProcessor::createLayout() {
 
     layout.add(std::make_unique<AudioParameterFloat>(
         ParameterID{ParamId::qualityAmount, 1}, "Reduction Amount",
-        NormalisableRange<float>(0.0f, 1.0f), 0.35f));
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.35f, percent));
 
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::formant, 1}, "Formant Correction", true));
@@ -129,13 +143,25 @@ void HarmonizerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 }
 
 bool HarmonizerAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const {
-    const auto& in = layouts.getMainInputChannelSet();
     const auto& out = layouts.getMainOutputChannelSet();
+    if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo()) {
+        return false;
+    }
 
-    if (in.isDisabled() || out.isDisabled()) return false;
-    const bool inOk = in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo();
-    const bool outOk = out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo();
-    return inOk && outOk;
+    // Mono, stereo or absent is fine for either input. The main bus is empty
+    // when a host puts this in an instrument slot and feeds the side chain
+    // instead, so refusing a disabled main input rules out Logic's whole
+    // MIDI-controlled-effect workflow.
+    const auto acceptable = [](const juce::AudioChannelSet& set) {
+        return set.isDisabled() || set == juce::AudioChannelSet::mono() ||
+               set == juce::AudioChannelSet::stereo();
+    };
+
+    if (!acceptable(layouts.getMainInputChannelSet())) return false;
+    if (layouts.inputBuses.size() > 1 && !acceptable(layouts.getChannelSet(true, 1))) {
+        return false;
+    }
+    return true;
 }
 
 void HarmonizerAudioProcessor::pushParameters() {
@@ -172,34 +198,58 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         event.data1 = size > 1 ? static_cast<uint8_t>(bytes[1]) : 0;
         event.data2 = size > 2 ? static_cast<uint8_t>(bytes[2]) : 0;
         engine_.midiQueue().push(event);
+
+        midiMessages_.fetch_add(1);
+        if (message.isNoteOn()) {
+            lastNote_.store(message.getNoteNumber());
+            noteOns_.fetch_add(1);
+        }
     }
 
     const int numSamples = buffer.getNumSamples();
-    const int numIn = getTotalNumInputChannels();
-    const int numOut = getTotalNumOutputChannels();
-    if (numSamples <= 0 || numIn <= 0 || numOut <= 0) return;
+    if (numSamples <= 0) return;
 
     if (monoIn_.getNumSamples() < numSamples) {
         monoIn_.setSize(1, numSamples, false, true, false);
         monoOut_.setSize(1, numSamples, false, true, false);
     }
 
-    // Sum the track to mono: the engine analyses a single voice, and a stereo
-    // source here is nearly always the same signal twice.
+    // Take audio from wherever the host is providing it. On an audio track that
+    // is the main bus; in Logic's instrument slot it is the side chain. Summing
+    // both means one code path covers either placement with nothing to
+    // configure.
     float* in = monoIn_.getWritePointer(0);
-    juce::FloatVectorOperations::copy(in, buffer.getReadPointer(0), numSamples);
-    for (int ch = 1; ch < numIn; ++ch) {
-        juce::FloatVectorOperations::add(in, buffer.getReadPointer(ch), numSamples);
+    juce::FloatVectorOperations::clear(in, numSamples);
+    int contributing = 0;
+
+    float busPeak[2] = {0.0f, 0.0f};
+    int busChannels[2] = {0, 0};
+
+    for (int busIndex = 0; busIndex < juce::jmin(2, getBusCount(true)); ++busIndex) {
+        const auto bus = getBusBuffer(buffer, true, busIndex);
+        busChannels[busIndex] = bus.getNumChannels();
+        for (int ch = 0; ch < bus.getNumChannels(); ++ch) {
+            juce::FloatVectorOperations::add(in, bus.getReadPointer(ch), numSamples);
+            busPeak[busIndex] = juce::jmax(busPeak[busIndex],
+                                           bus.getMagnitude(ch, 0, numSamples));
+            ++contributing;
+        }
     }
-    if (numIn > 1) {
-        juce::FloatVectorOperations::multiply(in, 1.0f / static_cast<float>(numIn), numSamples);
+    if (contributing > 1) {
+        juce::FloatVectorOperations::multiply(in, 1.0f / static_cast<float>(contributing),
+                                              numSamples);
     }
+    mainChannels_.store(busChannels[0]);
+    sideChannels_.store(busChannels[1]);
+    mainPeak_.store(busPeak[0]);
+    sidePeak_.store(busPeak[1]);
 
     float* out = monoOut_.getWritePointer(0);
     engine_.process(in, out, numSamples);
 
-    for (int ch = 0; ch < numOut; ++ch) {
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(ch), out, numSamples);
+    auto mainOut = getBusBuffer(buffer, false, 0);
+    for (int ch = 0; ch < mainOut.getNumChannels(); ++ch) {
+        juce::FloatVectorOperations::copy(mainOut.getWritePointer(ch), out, numSamples);
     }
 
     // The window size can change while running, which changes the engine's

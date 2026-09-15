@@ -45,6 +45,25 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
     dsp::Metrics metrics() const { return engine_.metrics(); }
+
+    /**
+     * What the host is actually delivering. The two audio buses are reported
+     * separately on purpose: in Logic the signal arrives on the side chain, and
+     * a single combined meter cannot tell you whether that routing worked.
+     */
+    struct Traffic {
+        int   mainChannels = 0;
+        int   sideChannels = 0;
+        float mainPeak = 0.0f;
+        float sidePeak = 0.0f;
+        int   midiMessages = 0;   // running total since load
+        int   noteOns = 0;
+        int   lastNote = -1;
+    };
+    Traffic traffic() const {
+        return {mainChannels_.load(), sideChannels_.load(), mainPeak_.load(), sidePeak_.load(),
+                midiMessages_.load(), noteOns_.load(), lastNote_.load()};
+    }
     void allNotesOff() { engine_.allNotesOff(); }
 
     // Parameter identifiers, shared with the editor.
@@ -81,6 +100,11 @@ private:
     // setLatencySamples() is a message-thread call, so the audio thread only
     // records the change and pokes the async updater.
     std::atomic<int> pendingLatency_{-1};
+    std::atomic<int>   mainChannels_{0}, sideChannels_{0};
+    std::atomic<float> mainPeak_{0.0f}, sidePeak_{0.0f};
+    std::atomic<int> midiMessages_{0};
+    std::atomic<int> noteOns_{0};
+    std::atomic<int> lastNote_{-1};
     int reportedLatency_ = -1;
 
     std::atomic<float>* pWetDry_ = nullptr;
