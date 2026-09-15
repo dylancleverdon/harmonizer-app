@@ -215,30 +215,35 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // Take audio from wherever the host is providing it. On an audio track that
-    // is the main bus; in Logic's instrument slot it is the side chain. Summing
-    // both means one code path covers either placement with nothing to
-    // configure.
+    // is the main bus; in Logic's instrument slot the track carries nothing and
+    // the signal arrives on the side chain.
+    //
+    // Each bus is averaged to mono on its own and the results are summed, rather
+    // than averaging every channel together. That distinction matters: Logic
+    // hands over a silent two-channel main bus alongside the live side chain,
+    // and averaging across all four channels quietly attenuated the only real
+    // signal by 6 dB.
     float* in = monoIn_.getWritePointer(0);
     juce::FloatVectorOperations::clear(in, numSamples);
-    int contributing = 0;
 
     float busPeak[2] = {0.0f, 0.0f};
     int busChannels[2] = {0, 0};
 
     for (int busIndex = 0; busIndex < juce::jmin(2, getBusCount(true)); ++busIndex) {
         const auto bus = getBusBuffer(buffer, true, busIndex);
-        busChannels[busIndex] = bus.getNumChannels();
-        for (int ch = 0; ch < bus.getNumChannels(); ++ch) {
-            juce::FloatVectorOperations::add(in, bus.getReadPointer(ch), numSamples);
+        const int channels = bus.getNumChannels();
+        busChannels[busIndex] = channels;
+        if (channels <= 0) continue;
+
+        const float scale = 1.0f / static_cast<float>(channels);
+        for (int ch = 0; ch < channels; ++ch) {
+            juce::FloatVectorOperations::addWithMultiply(in, bus.getReadPointer(ch), scale,
+                                                         numSamples);
             busPeak[busIndex] = juce::jmax(busPeak[busIndex],
                                            bus.getMagnitude(ch, 0, numSamples));
-            ++contributing;
         }
     }
-    if (contributing > 1) {
-        juce::FloatVectorOperations::multiply(in, 1.0f / static_cast<float>(contributing),
-                                              numSamples);
-    }
+
     mainChannels_.store(busChannels[0]);
     sideChannels_.store(busChannels[1]);
     mainPeak_.store(busPeak[0]);

@@ -175,6 +175,108 @@ static void testSidechainInput() {
                   "harmony still produced: peak %.3f, %7.2f Hz (want %7.2f, %+5.1f cents)",
                   peak, got, want, centsErr(got, want));
     check(peak > 0.02f && std::fabs(centsErr(got, want)) < 15.0, msg);
+
+    // Regression: a silent main bus must not attenuate the side chain. Averaging
+    // every input channel together rather than each bus separately cost 6 dB in
+    // exactly the configuration Logic produces.
+    {
+        HarmonizerAudioProcessor mainOnly;
+        juce::AudioProcessor::BusesLayout direct;
+        direct.inputBuses.add(juce::AudioChannelSet::mono());
+        direct.inputBuses.add(juce::AudioChannelSet::disabled());
+        direct.outputBuses.add(juce::AudioChannelSet::stereo());
+        if (mainOnly.setBusesLayout(direct)) {
+            setValue(mainOnly, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+            setChoice(mainOnly, HarmonizerAudioProcessor::ParamId::harmonyMode, 0);
+            setValue(mainOnly, HarmonizerAudioProcessor::ParamId::formant, 0.0f);
+            auto reference = render(mainOnly, sr, 256, f0, 64, 1, 1.0);
+
+            float refPeak = 0.0f;
+            for (float v : reference) refPeak = std::max(refPeak, std::fabs(v));
+            float sidePeak = 0.0f;
+            for (float v : out) sidePeak = std::max(sidePeak, std::fabs(v));
+
+            const double ratioDb = 20.0 * std::log10((sidePeak + 1e-9f) / (refPeak + 1e-9f));
+            char m2[220];
+            std::snprintf(m2, sizeof(m2),
+                          "side chain is as loud as the main bus: %.3f vs %.3f (%+.1f dB)",
+                          sidePeak, refPeak, ratioDb);
+            check(std::fabs(ratioDb) < 1.5, m2);
+        }
+    }
+}
+
+
+
+// The configuration Logic actually produces: a main input bus that exists and is
+// enabled but carries silence, alongside a live side chain. Averaging across all
+// four channels rather than per bus cost 6 dB here -- and a test that disables
+// the main bus entirely would not have noticed.
+static void testSilentMainBusDoesNotAttenuate() {
+    std::printf("\n-- A silent main bus must not quieten the side chain --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    auto runWith = [&](bool useSidechain) -> float {
+        HarmonizerAudioProcessor p;
+        juce::AudioProcessor::BusesLayout layout;
+        layout.inputBuses.add(juce::AudioChannelSet::stereo());   // present either way
+        layout.inputBuses.add(useSidechain ? juce::AudioChannelSet::stereo()
+                                           : juce::AudioChannelSet::disabled());
+        layout.outputBuses.add(juce::AudioChannelSet::stereo());
+        if (!p.setBusesLayout(layout)) return -1.0f;
+
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setChoice(p, HarmonizerAudioProcessor::ParamId::harmonyMode, 0);
+        setValue(p, HarmonizerAudioProcessor::ParamId::formant, 0.0f);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.0);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+
+        const int channels = juce::jmax(p.getTotalNumInputChannels(),
+                                        p.getTotalNumOutputChannels());
+        juce::AudioBuffer<float> buffer(channels, 256);
+        bool sent = false;
+        float peak = 0.0f;
+
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(channels, n, false, false, true);
+            buffer.clear();
+
+            // Feed the signal to the side chain when testing that path, leaving
+            // the main bus enabled but silent -- as Logic does in an instrument
+            // slot. Otherwise feed the main bus, for the reference level.
+            auto target = p.getBusBuffer(buffer, true, useSidechain ? 1 : 0);
+            for (int ch = 0; ch < target.getNumChannels(); ++ch) {
+                juce::FloatVectorOperations::copy(target.getWritePointer(ch),
+                                                  source.data() + pos, n);
+            }
+
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 64, 0.8f), 0); sent = true; }
+            p.processBlock(buffer, midi);
+
+            if (pos > total / 3) {
+                for (int i = 0; i < n; ++i) {
+                    peak = std::max(peak, std::fabs(buffer.getSample(0, i)));
+                }
+            }
+        }
+        return peak;
+    };
+
+    const float viaMain = runWith(false);
+    const float viaSide = runWith(true);
+    const double ratioDb = 20.0 * std::log10((viaSide + 1e-9f) / (viaMain + 1e-9f));
+
+    char msg[240];
+    std::snprintf(msg, sizeof(msg),
+                  "main-bus %.3f vs side-chain-with-silent-main %.3f (%+.1f dB)",
+                  viaMain, viaSide, ratioDb);
+    check(viaMain > 0.02f && viaSide > 0.02f && std::fabs(ratioDb) < 1.5, msg);
 }
 
 int main() {
@@ -313,6 +415,7 @@ int main() {
     }
 
     testSidechainInput();
+    testSilentMainBusDoesNotAttenuate();
 
     std::printf("\n=============================================\n");
     if (g_failures == 0) std::printf(" ALL PLUGIN CHECKS PASSED\n");
