@@ -119,6 +119,8 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     for (int i = 0; i < jazz::kStyleCount; ++i) {
         pJazzStyle_[i] = apvts.getRawParameterValue(ParamId::jazzStyle[i]);
     }
+    pJazzTranspose_ = apvts.getRawParameterValue(ParamId::jazzTranspose);
+    pJazzLatchKeys_ = apvts.getRawParameterValue(ParamId::jazzLatchKeys);
 
     pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
     pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
@@ -255,6 +257,26 @@ HarmonizerAudioProcessor::createLayout() {
             ParameterID{ParamId::jazzStyle[i], 1},
             "Voicing: " + kJazzStyleNames[i], false));
     }
+
+    // Semitones added to every held key before it names a key centre -- for
+    // a player who thinks in a transposing instrument's written pitch. Zero
+    // (concert pitch) changes nothing; common transpositions are labelled.
+    const auto asTransposition = AudioParameterIntAttributes().withStringFromValueFunction(
+        [](int v, int) {
+            switch (v) {
+                case 0:  return juce::String("Concert (C)");
+                case -2: return juce::String("Bb");
+                case 3:  return juce::String("Eb");
+                case 5:  return juce::String("F");
+                default: return (v > 0 ? juce::String("+") : juce::String("")) +
+                                juce::String(v) + " st";
+            }
+        });
+    layout.add(std::make_unique<AudioParameterInt>(
+        ParameterID{ParamId::jazzTranspose, 1}, "Transpose", -12, 12, 0, asTransposition));
+
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzLatchKeys, 1}, "Latch Key Centre", false));
 
     // --- Jazz custom chord dictionary ---------------------------------------
     // A user-built alternative to the dictionary above: pick the chord type
@@ -539,6 +561,8 @@ void HarmonizerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     jazzInputHash_ = 0;
     jazzDecisionCountdown_ = 0;
     jazzOn_ = pJazzMode_->load() > 0.5f;
+    jazzLatchActive_ = false;
+    jazzSustainHeld_.store(false);
 
     reportedLatency_ = engine_.algorithmicLatencySamples();
     setLatencySamples(reportedLatency_);
@@ -616,10 +640,26 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (message.isNoteOn()) {
             hostKeyDown_[message.getNoteNumber()] = true;
             jazzKeyVelocity_ = juce::jlimit(1, 127, static_cast<int>(message.getVelocity()));
+
+            // Latch (or sustain standing in for it) only ever updates from a
+            // fresh key press -- never a release, a few lines below, which is
+            // the whole point of it. Recomputed from every key now held, so
+            // adding a third note to an already-latched minor pair still
+            // updates the lowest note correctly.
+            if (jazzOn && (pJazzLatchKeys_->load() > 0.5f || jazzSustainHeld_.load())) {
+                int keys[16];
+                const int count = collectTransposedKeys(keys, 16);
+                latchKeysFrom(keys, count);
+            }
         } else if (message.isNoteOff()) {
             hostKeyDown_[message.getNoteNumber()] = false;
         } else if (message.isAllNotesOff() || message.isAllSoundOff()) {
             for (bool& key : hostKeyDown_) key = false;
+        } else if (message.isController() && message.getControllerNumber() == 64) {
+            // Sustain pedal. Tracked regardless of jazz mode, the same as
+            // hostKeyDown_ above, so it is already correct the moment jazz
+            // mode is switched on rather than only from the next press.
+            jazzSustainHeld_.store(message.getControllerValue() >= 64);
         }
 
         if (!jazzOn) {
@@ -705,6 +745,28 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 // nothing, and talks to the engine through the same MIDI queue a keyboard would.
 // ---------------------------------------------------------------------------
 
+int HarmonizerAudioProcessor::transposeSemitones() const {
+    return static_cast<int>(std::lround(pJazzTranspose_->load()));
+}
+
+int HarmonizerAudioProcessor::collectTransposedKeys(int* keys, int maxKeys) const {
+    int count = 0;
+    const int transpose = transposeSemitones();
+    for (int note = 0; note < 128 && count < maxKeys; ++note) {
+        if (hostKeyDown_[note]) keys[count++] = juce::jlimit(0, 127, note + transpose);
+    }
+    return count;
+}
+
+void HarmonizerAudioProcessor::latchKeysFrom(const int* keys, int count) {
+    if (keys == nullptr || count <= 0) return;
+    int lowest = keys[0];
+    for (int i = 1; i < count; ++i) lowest = juce::jmin(lowest, keys[i]);
+    jazzLatchedKeyPc_ = ((lowest % 12) + 12) % 12;
+    jazzLatchedMinor_ = count >= 2;
+    jazzLatchActive_ = true;
+}
+
 void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
     // Whichever direction this is going, the engine is holding notes that mean
     // something different on the other side of the switch.
@@ -716,6 +778,7 @@ void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
     jazzCandidateTicks_ = 0;
     jazzInputHash_ = 0;
     jazzDecisionCountdown_ = 0;
+    jazzLatchActive_ = false;
 
     // Leaving jazz mode with keys still down: hand those keys to the engine so
     // the ordinary modes pick up from where the keyboard actually is, rather
@@ -733,6 +796,8 @@ void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
 
     jvSounding_.store(false);
     jvCount_.store(0);
+    jvKeyLatched_.store(false);
+    jvSustainHeld_.store(false);
     jazzOn_ = enabled;
 }
 
@@ -810,12 +875,40 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         jazzCandidateTicks_ = 0;
     }
 
-    int keys[16];
-    int keyCount = 0;
-    for (int note = 0; note < 128 && keyCount < 16; ++note) {
-        if (hostKeyDown_[note]) keys[keyCount++] = note;
+    int liveKeys[16];
+    const int liveKeyCount = collectTransposedKeys(liveKeys, 16);
+    jvHeldKeys_.store(liveKeyCount);
+
+    // Latch (the toggle, or the sustain pedal standing in for it while held)
+    // freezes the key centre against releases: once something has been
+    // captured, only a fresh key press -- handled in processBlock(), never
+    // here -- can change it. Turning latch on (or pressing sustain) with
+    // keys already down captures them immediately rather than waiting for
+    // the next press.
+    const bool sustainHeld = jazzSustainHeld_.load();
+    const bool latched = pJazzLatchKeys_->load() > 0.5f || sustainHeld;
+    jvSustainHeld_.store(sustainHeld);
+    if (latched && !jazzLatchActive_ && liveKeyCount > 0) {
+        latchKeysFrom(liveKeys, liveKeyCount);
     }
-    jvHeldKeys_.store(keyCount);
+
+    int keys[2];
+    int keyCount = 0;
+    if (latched) {
+        if (jazzLatchActive_) {
+            keys[0] = 60 + jazzLatchedKeyPc_;
+            keyCount = 1;
+            if (jazzLatchedMinor_) { keys[1] = keys[0] + 7; keyCount = 2; }
+        }
+    } else {
+        for (int i = 0; i < liveKeyCount && i < 2; ++i) keys[i] = liveKeys[i];
+        keyCount = juce::jmin(liveKeyCount, 2);
+        // More than two keys held only ever changes which is lowest, already
+        // reflected by collectTransposedKeys() being in ascending note order;
+        // Voicer::update() only reads the first entry and the count.
+        if (liveKeyCount > 2) keyCount = 2;
+    }
+    jvKeyLatched_.store(latched && jazzLatchActive_);
 
     // No key, no key centre: there is nothing to build a chord out of.
     if (keyCount == 0) {
@@ -853,6 +946,14 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     }
 
     const jazz::Settings settings = jazzSettings();
+
+    // Sustain freezes the chord itself, not just the key centre: whatever is
+    // already sounding holds out even as the melody note moves on. Pitch
+    // stability tracking above keeps running regardless, so the moment the
+    // pedal comes back up the chord already matching whatever is playing
+    // right now takes effect immediately rather than waiting out another
+    // stability window.
+    if (sustainHeld) return;
 
     // Re-voice only when something actually changed. Holding the answer steady
     // is what keeps a shuffled voicing from reshuffling under a held note.
@@ -920,6 +1021,8 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.melodyDegree = jvMelodyDegree_.load();
     v.melodyHz = jvMelodyHz_.load();
     v.heldKeys = jvHeldKeys_.load();
+    v.keyLatched = jvKeyLatched_.load();
+    v.sustainHeld = jvSustainHeld_.load();
     v.noteCount = juce::jlimit(0, jazz::kMaxVoicingNotes, jvCount_.load());
     for (int i = 0; i < jazz::kMaxVoicingNotes; ++i) v.notes[i] = jvNotes_[i].load();
     v.roman = jvRoman_.load();

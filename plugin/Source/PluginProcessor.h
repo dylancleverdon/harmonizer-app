@@ -93,6 +93,11 @@ public:
         int   melodyDegree = 1;
         float melodyHz = 0.0f;
         int   heldKeys = 0;
+        // True when the key centre above came from a latch (the toggle, or
+        // the sustain pedal standing in for it) rather than being read live
+        // from currently held keys -- heldKeys can be 0 while this is true.
+        bool  keyLatched = false;
+        bool  sustainHeld = false;   // the sustain pedal (CC64) is down right now
         int   noteCount = 0;
         int   notes[jazz::kMaxVoicingNotes] = {};
         // The asked-for range was further from the played note than the engine
@@ -138,6 +143,19 @@ public:
         static constexpr const char* jazzDouble = "jazzDouble";
         // One per voicing style, in jazz::Style order.
         static const char* const jazzStyle[jazz::kStyleCount];
+
+        // Semitones added to every held key before it is read as a key
+        // centre -- for a transposing instrument (trumpet, clarinet...)
+        // whose player thinks in written rather than concert pitch. Never
+        // applied to the melody note, which is measured from real sound and
+        // is concert pitch already.
+        static constexpr const char* jazzTranspose = "jazzTranspose";
+
+        // Freezes the key centre against key releases: once engaged it only
+        // changes on a fresh key press, never a release, so lifting one
+        // finger of a held minor chord can't be misread as "you meant
+        // major" mid-release. See jazzLatchActive_.
+        static constexpr const char* jazzLatchKeys = "jazzLatchKeys";
 
         // Custom chord dictionary: a user-built alternative to the dictionary
         // baked into JazzVoicer.cpp. Plugin only, and off by default -- with
@@ -290,6 +308,8 @@ private:
     std::atomic<float>* pJazzShuffle_ = nullptr;
     std::atomic<float>* pJazzDouble_ = nullptr;
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};
+    std::atomic<float>* pJazzTranspose_ = nullptr;
+    std::atomic<float>* pJazzLatchKeys_ = nullptr;
 
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
@@ -308,6 +328,30 @@ private:
      *  outside of any bound UI control. */
     void setParamValue(const juce::String& id, float rawValue);
 
+    // --- key latch and sustain --------------------------------------------
+    // Latch (the toggle, or the sustain pedal standing in for it while held)
+    // freezes the key centre against releases. It is only ever written from
+    // a fresh key press -- see the note-on handling in processBlock() -- so
+    // a release can never change it, which is the whole point: lifting one
+    // finger of a held minor chord should never read as "you meant major".
+    bool jazzLatchActive_ = false;   // has anything been captured yet
+    int  jazzLatchedKeyPc_ = 0;
+    bool jazzLatchedMinor_ = false;
+    // CC64 (sustain pedal), independent of jazzOn. Atomic only because
+    // jazzView() (message thread) reads it for the status panel; every write
+    // is from the audio thread.
+    std::atomic<bool> jazzSustainHeld_{false};
+
+    /** Currently held keys, each shifted by the transpose parameter -- what
+     *  every reading of hostKeyDown_ should use instead of the raw notes, so
+     *  latch capture and the live reading in jazzUpdate() never disagree. */
+    int collectTransposedKeys(int* keys, int maxKeys) const;
+    int transposeSemitones() const;
+
+    /** Captures a fresh latch from a set of (already transposed) keys --
+     *  lowest key names the centre, two or more means minor. */
+    void latchKeysFrom(const int* keys, int count);
+
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as
     bool hostKeyDown_[128] = {};             // keys the host is holding
@@ -324,6 +368,8 @@ private:
     std::atomic<int>   jvKeyCentre_{-1}, jvDegree_{0}, jvRoot_{-1}, jvType_{0}, jvStyle_{0};
     std::atomic<bool>  jvCustomVoicing_{false};
     std::atomic<int>   jvMelodyNote_{-1}, jvMelodyDegree_{1}, jvCount_{0}, jvHeldKeys_{0};
+    std::atomic<bool>  jvKeyLatched_{false};
+    std::atomic<bool>  jvSustainHeld_{false};
     std::atomic<bool>  jvMinor_{false}, jvLimited_{false};
     std::atomic<int>   jvWindowLow_{0}, jvWindowHigh_{127};
     std::atomic<float> jvMelodyHz_{0.0f};

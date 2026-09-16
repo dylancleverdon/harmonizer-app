@@ -458,6 +458,151 @@ static void testJazzChordMode() {
     }
 }
 
+// Transpose shifts the held keys, not the melody -- a Bb-trumpet player can
+// hold "C" (their written key) and have it read as concert Bb.
+static void testJazzTranspose() {
+    std::printf("\n-- Jazz transpose --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;   // A3
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzTranspose, -2.0f);   // Bb instrument
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    const int total = static_cast<int>(sr * 1.5);
+    std::vector<float> source(static_cast<size_t>(total));
+    makeVoice(source, f0, sr);
+    juce::AudioBuffer<float> buffer(1, 256);
+    bool sent = false;
+    for (int pos = 0; pos < total; pos += 256) {
+        const int n = juce::jmin(256, total - pos);
+        buffer.setSize(1, n, false, false, true);
+        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+        juce::MidiBuffer midi;
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }   // "C"
+        p.processBlock(buffer, midi);
+    }
+    const auto v = p.jazzView();
+    check(v.sounding && v.keyCentrePc == 10,
+          juce::String("holding C with transpose set to Bb (-2) reads as key centre ") +
+              (v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?"));
+}
+
+// Latch freezes the key centre against key releases: it only ever updates
+// from a fresh press, so lifting one finger of a held minor chord can't be
+// misread as "you meant major" mid-release.
+static void testJazzLatch() {
+    std::printf("\n-- Jazz key latch --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    const auto run = [&](bool latch) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzLatchKeys, latch ? 1.0f : 0.0f);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+
+        int step = 0;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (step == 0) midi.addEvent(juce::MidiMessage::noteOn(1, 48, 0.8f), 0);        // bottom key
+            else if (step == 5) midi.addEvent(juce::MidiMessage::noteOn(1, 55, 0.8f), 0);   // + upper key -> minor
+            else if (step == 10) midi.addEvent(juce::MidiMessage::noteOff(1, 55), 0);       // release upper
+            ++step;
+            p.processBlock(buffer, midi);
+        }
+        return p.jazzView();
+    };
+
+    const auto latched = run(true);
+    check(latched.sounding && latched.minorKey && latched.keyCentrePc == 0 && latched.keyLatched &&
+              latched.heldKeys == 1,
+          juce::String("with latch on, releasing the upper key of a minor pair stays minor "
+                       "(minor=") +
+              (latched.minorKey ? "yes" : "no") + ", latched=" + (latched.keyLatched ? "yes" : "no") +
+              ", physically held=" + juce::String(latched.heldKeys) + ")");
+
+    const auto live = run(false);
+    check(live.sounding && !live.minorKey && !live.keyLatched,
+          juce::String("without latch, the same release reverts to major -- the bug latch exists "
+                       "to fix (minor=") +
+              (live.minorKey ? "yes" : "no") + ")");
+}
+
+// The sustain pedal (CC64) freezes the currently sounding chord -- even as
+// the melody note moves on -- and stands in for latch while held, so the
+// key centre survives every keyboard key being released too.
+static void testJazzSustain() {
+    std::printf("\n-- Jazz sustain pedal --\n");
+    const double sr = 48000.0;
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    const auto renderTone = [&](double f0, double seconds, const juce::MidiMessage* firstEvent) {
+        const int total = static_cast<int>(sr * seconds);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent && firstEvent != nullptr) { midi.addEvent(*firstEvent, 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+    };
+
+    auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+    renderTone(220.0, 1.5, &keyOn);   // hold C, play A3 -- let a chord settle
+    const auto before = p.jazzView();
+    check(before.sounding, "a chord settles before the pedal is touched");
+
+    auto sustainDown = juce::MidiMessage::controllerEvent(1, 64, 127);
+    renderTone(220.0, 0.1, &sustainDown);
+    renderTone(330.0, 1.5, nullptr);   // switch to E4 -- a different degree entirely
+    const auto frozen = p.jazzView();
+    check(frozen.sustainHeld && frozen.chordRootPc == before.chordRootPc &&
+              frozen.melodyDegree == before.melodyDegree,
+          "the chord holds through a melody change while the pedal is down");
+
+    auto sustainUp = juce::MidiMessage::controllerEvent(1, 64, 0);
+    renderTone(330.0, 0.1, &sustainUp);
+    renderTone(330.0, 1.5, nullptr);
+    const auto released = p.jazzView();
+    check(!released.sustainHeld && released.melodyNote == 64,
+          juce::String("releasing the pedal lets the chord follow the new melody note again "
+                       "(got melody note ") +
+              juce::String(released.melodyNote) + ")");
+
+    auto sustainDown2 = juce::MidiMessage::controllerEvent(1, 64, 127);
+    renderTone(330.0, 0.1, &sustainDown2);
+    auto keyOff = juce::MidiMessage::noteOff(1, 60);
+    renderTone(330.0, 0.1, &keyOff);   // release the keyboard key while the pedal is down
+    renderTone(330.0, 1.5, nullptr);
+    const auto stillNamed = p.jazzView();
+    check(stillNamed.sounding && stillNamed.heldKeys == 0 && stillNamed.keyLatched,
+          "the pedal keeps the key centre alive even after every keyboard key is released");
+}
+
 // Auto harmony voices ignores the Chord Voices slider entirely and lets
 // through exactly as many notes as the chord naturally has -- extensions
 // included -- rather than the number picked ahead of time.
@@ -855,6 +1000,9 @@ int main() {
     testSidechainInput();
     testSilentMainBusDoesNotAttenuate();
     testJazzChordMode();
+    testJazzTranspose();
+    testJazzLatch();
+    testJazzSustain();
     testJazzAutoVoices();
     testJazzCustomDictionary();
 

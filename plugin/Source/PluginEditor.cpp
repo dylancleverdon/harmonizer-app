@@ -422,6 +422,25 @@ public:
                        "around your note.");
         mode.addRow(intro_, 58);
 
+        transposeLabel_.setText("TRANSPOSE", look::muted);
+        mode.addRow(transposeLabel_, 14);
+        styleSlider(transposeSlider_);
+        mode.addRow(transposeSlider_, 24);
+        transposeNote_.setText(
+            "Shifts the keys you hold before they name a key centre -- never the note you play, "
+            "which is measured from real sound and is concert pitch already. Set this to your "
+            "instrument's transposition and hold keys using its written pitch.");
+        mode.addRow(transposeNote_, 30);
+
+        styleToggle(latch_, "Latch key centre");
+        mode.addRow(latch_, 24);
+        latchNote_.setText(
+            "Freezes the key centre against releases: once engaged, only a fresh key press "
+            "changes it, never lifting one. Off, releasing down to one key from a held minor "
+            "chord reads as major the instant you lift a finger -- on, it stays minor until you "
+            "release every key and press a single one again.");
+        mode.addRow(latchNote_, 58);
+
         keyRow_ = std::make_unique<look::StatRow>("Key centre", true);
         playingRow_ = std::make_unique<look::StatRow>("You are playing");
         chordRow_ = std::make_unique<look::StatRow>("Chord", true);
@@ -892,6 +911,8 @@ public:
         aSmooth_ = std::make_unique<SA>(apvts, P::jazzSmoothness, smoothSlider_);
         aVoices_ = std::make_unique<SA>(apvts, P::jazzVoices, voicesSlider_);
         aVoicesAuto_ = std::make_unique<BA>(apvts, P::jazzVoicesAuto, voicesAuto_);
+        aTranspose_ = std::make_unique<SA>(apvts, P::jazzTranspose, transposeSlider_);
+        aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
 
         aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
         aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
@@ -907,8 +928,19 @@ public:
         smoothSlider_.valueFromTextFunction = [](const juce::String& s) {
             return s.getDoubleValue() / 100.0;
         };
+        transposeSlider_.textFromValueFunction = [](double v) {
+            switch (static_cast<int>(v)) {
+                case 0:  return juce::String("Concert (C)");
+                case -2: return juce::String("Bb");
+                case 3:  return juce::String("Eb");
+                case 5:  return juce::String("F");
+                default: return (v > 0 ? juce::String("+") : juce::String("")) +
+                                juce::String(static_cast<int>(v)) + " st";
+            }
+        };
         lowSlider_.updateText();
         highSlider_.updateText();
+        transposeSlider_.updateText();
         smoothSlider_.updateText();
     }
 
@@ -920,10 +952,16 @@ public:
 
         voicesSlider_.setEnabled(!voicesAuto_.getToggleState());
 
-        keyRow_->setValue(view.heldKeys == 0
-                              ? juce::String("hold a key")
-                              : juce::String(jazz::pitchClassName(view.keyCentrePc)) +
-                                    (view.minorKey ? " minor" : " major"));
+        if (view.keyCentrePc >= 0 && (view.heldKeys > 0 || view.keyLatched)) {
+            juce::String tag;
+            if (view.keyLatched) tag += "  (latched)";
+            if (view.sustainHeld) tag += "  [sustain]";
+            keyRow_->setValue(juce::String(jazz::pitchClassName(view.keyCentrePc)) +
+                              (view.minorKey ? " minor" : " major") + tag);
+        } else {
+            keyRow_->setValue(view.sustainHeld ? "sustain down, but nothing latched yet"
+                                               : "hold a key");
+        }
 
         if (view.melodyNote >= 0 && view.melodyHz > 0.0f) {
             playingRow_->setValue(flatNoteName(view.melodyNote) + "  " +
@@ -967,11 +1005,17 @@ public:
         if (!view.enabled) {
             status_.setText("Switched off. The harmony mode on the main page is in charge.",
                             look::muted);
-        } else if (view.heldKeys == 0) {
-            status_.setText("Hold a key on your controller to set the key centre.", look::warn);
+        } else if (view.heldKeys == 0 && !view.keyLatched) {
+            status_.setText(view.sustainHeld
+                                ? "Sustain is down, but no key has ever been held to latch."
+                                : "Hold a key on your controller to set the key centre.",
+                            look::warn);
         } else if (view.melodyHz <= 0.0f) {
             status_.setText("Key centre set. Play a note into the input and the chord follows it.",
                             look::warn);
+        } else if (view.sustainHeld) {
+            status_.setText("Sustain is down -- holding the chord out. Let go and press it again "
+                            "for a new one.", look::accent);
         } else if (!view.sounding) {
             status_.setText("Waiting for a steady pitch to build a chord on.", look::warn);
         } else {
@@ -1140,15 +1184,16 @@ private:
     juce::OwnedArray<juce::ToggleButton> styleToggles_;
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
-    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_;
-    juce::ToggleButton voicesAuto_;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_;
+    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_;
+    juce::ToggleButton voicesAuto_, latch_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_;
     std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
     std::unique_ptr<look::StatRow> keyRow_, playingRow_, chordRow_, voicingRow_, rangeRow_,
         smoothRow_;
     look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
         inversionLabel_, shiftNote_, rangeLabel_, rangeNote_, smoothNote_, stylesNote_,
-        shuffleNote_, doubleNote_;
+        shuffleNote_, doubleNote_, transposeLabel_, transposeNote_, latchNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aEnable_, aNinth_,
         aEleventh_, aThirteenth_, aShuffle_, aDouble_;

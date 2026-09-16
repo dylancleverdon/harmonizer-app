@@ -80,6 +80,37 @@ gives `im7`, `iim7b5`, `bIIImaj7`, `V7b9` and the dorian `IV7`. The panel names
 the chord as it is written on a lead sheet and tells you which tone of it you
 are.
 
+### Transpose
+
+Shifts the keys you hold before they name a key centre — never the note you
+play, which is measured from real sound and is concert pitch already. If
+you play a transposing instrument and think in its written pitch — a Bb
+trumpet reading a chart in Bb, say — set this to match and hold keys using
+that instrument's key names; the plugin does the conversion to concert
+pitch for you. `Concert (C)` (the default), `Bb`, `Eb` and `F` are labelled;
+anything else shows as a semitone count.
+
+### Latch and sustain
+
+**Latch key centre** freezes the key centre against releases: once
+something is held, only a fresh key press changes it, never a release. This
+exists because MIDI keys don't release at the same instant — lifting your
+hand off a held minor chord lifts one finger before the other, and without
+latch, that momentary one-key state reads as major for the few milliseconds
+before the second finger comes up too. With latch on, a minor key centre
+stays minor through the whole release, down to no keys held at all; the way
+back to major is to release every key and press exactly one, fresh.
+
+The **sustain pedal** (MIDI CC 64) does two things while held, needing
+nothing else switched on: it stands in for latch, so the key centre survives
+your hand coming off the keys entirely, and it freezes the chord itself —
+whatever was last triggered holds out even if you move to a different note
+on your horn. To pick up a new chord, release the pedal and press it again;
+merely holding it captures nothing new. Pitch tracking keeps running
+underneath while the pedal is down, so the moment it comes back up, the
+chord already matches whatever you are currently playing rather than
+waiting out another stability window.
+
 ### Chord tones
 
 Sevenths are always in. **9ths**, **11ths** and **13ths** stack on top, and the
