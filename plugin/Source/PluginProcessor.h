@@ -82,6 +82,10 @@ public:
     struct JazzView {
         bool  enabled = false;
         bool  sounding = false;      // a chord is being held up
+        // The real key centre the engine is actually using -- already
+        // includes Keys Transpose, since that control genuinely changes
+        // which key you're in (see keyTransposeSemitones() below), not just
+        // how it's labelled. Print this straight.
         int   keyCentrePc = -1;
         bool  minorKey = false;
         int   scaleDegree = 0;
@@ -89,6 +93,11 @@ public:
         int   typeIndex = 0;
         int   styleIndex = 0;
         bool  customVoicing = false;   // named by a custom entry, not the built-in dictionary
+        // Real, measured concert pitch, always -- unlike keyCentrePc, this
+        // never includes any transpose. Audio In Transpose only relabels it
+        // for display (see melodyTransposeSemitones() below); it can't be
+        // "shifted" for real, since it's read from live sound, not a key
+        // press.
         int   melodyNote = -1;
         int   melodyDegree = 1;
         float melodyHz = 0.0f;
@@ -106,14 +115,11 @@ public:
         int   windowLow = 0;
         int   windowHigh = 127;
         const char* roman = "";
-        // Display only -- keyCentrePc, melodyNote, chordRootPc and notes[]
-        // above are all real concert pitch, exactly what the engine used.
-        // The editor adds these when naming them, so a transposing player
-        // reads the names their part would use without the engine itself
-        // ever seeing a shifted note. keyTransposeSemitones renames the key
-        // centre (from held keys); melodyTransposeSemitones renames the
-        // live-audio melody note -- independent controls, independent values.
-        int   keyTransposeSemitones = 0;
+        // Display only, for the editor to rename melodyNote with when
+        // printing "You are playing" -- written = concert -
+        // melodyTransposeSemitones. keyCentrePc needs no such step: Keys
+        // Transpose already moved it for real (see above), so the "Key
+        // centre" row prints it straight.
         int   melodyTransposeSemitones = 0;
     };
     JazzView jazzView() const;
@@ -153,13 +159,14 @@ public:
         // One per voicing style, in jazz::Style order.
         static const char* const jazzStyle[jazz::kStyleCount];
 
-        // Display only, and only ever renames what its own input reads as --
-        // neither one is ever added to a real pitch anywhere the engine can
-        // see it. jazzTranspose covers the held keys naming a key centre;
-        // jazzTransposeAudioIn covers the live melody note, measured from
-        // real sound. Separate controls because a Bb-trumpet melody and a
-        // concert-pitch keyboard commonly need different (or no) relabeling
-        // at the same time.
+        // Two different jobs. jazzTranspose is real: it is added to every
+        // held key before the key names a key centre, so it genuinely
+        // changes what key the chord is built in -- see collectKeys().
+        // jazzTransposeAudioIn is display only: it can never be added to the
+        // live melody note, which is measured from real sound, so it only
+        // renames what the "You are playing" row prints. Separate controls
+        // because a Bb-trumpet melody and a concert-pitch keyboard commonly
+        // need different (or no) transposition at the same time.
         static constexpr const char* jazzTranspose = "jazzTranspose";
         static constexpr const char* jazzTransposeAudioIn = "jazzTransposeAudioIn";
 
@@ -360,20 +367,22 @@ private:
     // is from the audio thread.
     std::atomic<bool> jazzSustainHeld_{false};
 
-    /** Currently held keys, in ascending order -- what every reading of
-     *  hostKeyDown_ should use instead of walking the raw array by hand, so
-     *  latch capture and the live reading in jazzUpdate() never disagree.
-     *  Concert pitch, always -- transpose never reaches this. It is a
-     *  read-only display convenience (see keyTransposeSemitones()), not an
-     *  input to the engine: shifting it here would detune the key centre
-     *  against the melody note, which is measured from real audio and can't
-     *  be transposed to match. */
+    /** Currently held keys, in ascending order and already shifted by Keys
+     *  Transpose -- what every reading of hostKeyDown_ should use instead of
+     *  walking the raw array by hand, so latch capture and the live reading
+     *  in jazzUpdate() never disagree about what transpose did to them. The
+     *  shift is real, not a label: a player who holds a familiar key while
+     *  reading a transposing instrument's chart is naming a different key
+     *  centre on purpose, and the chord the engine builds actually moves
+     *  with it. Never applied to the melody note, which is read from live
+     *  audio -- it stays whatever it really is; see melodyTransposeSemitones()
+     *  for how that side gets relabelled instead, purely for display. */
     int collectKeys(int* keys, int maxKeys) const;
 
-    /** The two transpose controls' values, for display only -- naming the key
-     *  centre and the note you're playing the way a transposing instrument's
-     *  part would read them. Independent of each other; neither is ever
-     *  applied to anything the engine sees. */
+    /** Keys Transpose (added to every held key before it names a key centre
+     *  -- see collectKeys()) and Audio In Transpose (display only: how the
+     *  editor renames the live melody note, since it can never be shifted
+     *  for real). Independent controls, independent values. */
     int keyTransposeSemitones() const;
     int melodyTransposeSemitones() const;
 

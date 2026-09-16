@@ -82,23 +82,30 @@ are.
 
 ### Transpose
 
-Two independent controls, **Keys Transpose** and **Audio In Transpose** —
-one renames the key centre your held keys are naming, the other renames the
-live melody note coming from the audio input. Both are display only: the
-chord that gets built and how it actually sounds never move, whatever
-either is set to. What changes is only the letter the panel prints for the
-"Key centre" and "You are playing" rows, so a transposing player reads the
-name their part would use.
+Two independent controls with two different jobs.
 
-Set each to the transposition of whichever instrument is on that input — a
-Bb trumpet playing into the audio input, say, gets Audio In Transpose set to
-`Bb`, so a concert Bb it plays shows as `C`; a keyboard player holding keys
-named for the same Bb part sets Keys Transpose to `Bb` too, so the same
-concert Bb read on a key also shows as `C`. They're separate controls
-because the two inputs commonly need different (or no) relabelling at the
-same time — a concert-pitch keyboard alongside a transposing horn, say.
-`Concert (C)` (the default for both), `Bb`, `Eb` and `F` are labelled;
-anything else shows as a semitone count.
+**Keys Transpose** is real: it is added to every key you hold before it
+names a key centre, so it genuinely changes what key the chord is built
+in — not just a label. Set it to your instrument's transposition and hold
+keys the way its written part would, and the harmony comes out in the
+right concert key. A Bb trumpet reads a written C as concert Bb; set Keys
+Transpose to `Bb` and holding a C on your controller does the same thing —
+the chord actually builds in concert Bb.
+
+**Audio In Transpose** can never work that way, and doesn't try to: the
+live melody note is measured from real sound, so there's no "written
+pitch" to substitute it with, and it never shifts a single Hz of it. It
+only renames what the "You are playing" row prints — set it to the
+transposition of whatever's coming into the audio input (a Bb trumpet,
+say) and a concert Bb it plays reads as `C`, matching that trumpet's own
+part, purely so the two rows read consistently. It never touches the
+chord or how anything actually sounds.
+
+They're separate controls because the two inputs commonly need different
+transpositions at the same time — a keyboard held in a transposing
+instrument's written pitch, say, alongside a different (or no)
+transposition on the live audio. `Concert (C)` (the default for both),
+`Bb`, `Eb` and `F` are labelled; anything else shows as a semitone count.
 
 ### Latch and sustain
 
@@ -283,19 +290,23 @@ editor does.
 Latch and sustain live entirely in `PluginProcessor`'s
 `processBlock()`/`jazzUpdate()` -- held keys are read through `collectKeys()`
 everywhere rather than straight from the raw MIDI state, so latch capture and
-the live reading never disagree. Transpose never reaches this: it is a pair
-of pure display transforms, applied only in `PluginEditor` when naming the
-key centre and the live melody note from their own independent controls
-(`written = concert - transposeSemitones`, matching each slider's own
-convention that -2/+3/+5 are Bb/Eb/F). The engine, the voicer and every
-value on `JazzView` besides `keyTransposeSemitones`/`melodyTransposeSemitones`
-themselves stay real concert pitch -- what the key centre and the melody
-actually are was never going to agree with each other under a shift applied
-to only one of them, since the melody note comes from live audio and can't
-be transposed to match; keeping the two display controls independent (rather
-than one shared transpose) is also what lets a concert-pitch keyboard sit
-next to a transposing horn on the audio input without either row lying about
-what the other actually is. Glide is the one piece that reaches into the shared
+the live reading never disagree about what Keys Transpose did to them.
+Keys Transpose is real: `collectKeys()` adds it to every held key before
+anything else sees them, so `Voicer::update()` builds the chord around the
+shifted key centre, not the physical one -- the whole point, since it is
+how a keyboard player names a key centre in a transposing instrument's
+written pitch and actually gets that concert key out. Audio In Transpose
+can't work that way -- the melody note comes from `engine_.metrics().
+detectedPitchHz`, real measured pitch, and there is nothing to substitute
+it with -- so it never reaches `jazzUpdate()` at all. It is applied exactly
+once, in `PluginEditor`, purely to rename the "You are playing" row
+(`written = concert - melodyTransposeSemitones`, matching the slider's own
+convention that -2/+3/+5 are Bb/Eb/F); the "Key centre" row needs no such
+step, since `keyCentrePc` already carries the real Keys Transpose shift and
+prints straight. Keeping the two controls independent is what lets a
+keyboard held in one transposing convention sit next to a differently (or
+never) transposed live instrument without either one being wrong for the
+other. Glide is the one piece that reaches into the shared
 engine, and the only place jazz mode's voice matching lives is
 `PluginProcessor::jazzApply()` -- the engine itself has no idea a "chord"
 exists, only individual voices.

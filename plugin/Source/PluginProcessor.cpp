@@ -260,14 +260,16 @@ HarmonizerAudioProcessor::createLayout() {
             "Voicing: " + kJazzStyleNames[i], false));
     }
 
-    // Display-only, both of them -- never reaches the engine, never shifts a
-    // single Hz of real audio or a single held MIDI note used for the actual
-    // chord. Each just renames what one input reads as, for a player who
-    // thinks in a transposing instrument's written pitch: held keys get their
-    // own control, the live audio input gets a separate one, so a Bb trumpet
-    // and a concert-pitch keyboard can each be labelled correctly and still
-    // read the same letter for the same underlying pitch. Zero (concert
-    // pitch) changes nothing; common transpositions are labelled.
+    // Two controls, two different jobs. Keys Transpose is real: it is added
+    // to every held key before the key is read as a key centre, so holding a
+    // familiar key while reading a transposing instrument's chart genuinely
+    // changes what key the chord is built in -- exactly like a Bb trumpet
+    // reading a chart in Bb reads a written C as concert Bb. Audio In
+    // Transpose never shifts a single Hz of the real audio the melody note
+    // is measured from -- it only relabels what the "You are playing" row
+    // prints, so a transposing instrument's live pitch is named the way that
+    // instrument's part would read it. Zero (concert pitch) changes nothing
+    // on either; common transpositions are labelled.
     const auto asTransposition = AudioParameterIntAttributes().withStringFromValueFunction(
         [](int v, int) {
             switch (v) {
@@ -780,8 +782,9 @@ int HarmonizerAudioProcessor::melodyTransposeSemitones() const {
 
 int HarmonizerAudioProcessor::collectKeys(int* keys, int maxKeys) const {
     int count = 0;
+    const int transpose = keyTransposeSemitones();
     for (int note = 0; note < 128 && count < maxKeys; ++note) {
-        if (hostKeyDown_[note]) keys[count++] = note;
+        if (hostKeyDown_[note]) keys[count++] = juce::jlimit(0, 127, note + transpose);
     }
     return count;
 }
@@ -1156,7 +1159,6 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.rangeLimited = jvLimited_.load();
     v.windowLow = jvWindowLow_.load();
     v.windowHigh = jvWindowHigh_.load();
-    v.keyTransposeSemitones = keyTransposeSemitones();
     v.melodyTransposeSemitones = melodyTransposeSemitones();
     return v;
 }

@@ -427,9 +427,10 @@ public:
         styleSlider(transposeSlider_);
         mode.addRow(transposeSlider_, 24);
         transposeNote_.setText(
-            "Display only -- never touches the chord or how it sounds. Renames the key centre "
-            "your held keys are naming, the way your instrument's part would read it. Set this "
-            "to your instrument's transposition.");
+            "Shifts the keys you hold before they name a key centre -- for real, not just the "
+            "label: hold what your instrument's chart calls the tonic and the chord actually "
+            "builds in that key. Set this to your instrument's transposition, e.g. Bb to play "
+            "in concert Bb by holding a written C.");
         mode.addRow(transposeNote_, 30);
 
         transposeAudioLabel_.setText("AUDIO IN TRANSPOSE", look::muted);
@@ -437,9 +438,11 @@ public:
         styleSlider(transposeAudioSlider_);
         mode.addRow(transposeAudioSlider_, 24);
         transposeAudioNote_.setText(
-            "Display only, and separate from the control above -- renames the note you're "
-            "playing live, so a concert Bb into the input reads as the same letter your keys "
-            "would read for the same pitch. Set this to the live instrument's transposition.");
+            "Display only -- never touches the chord or how it sounds, since the note you're "
+            "playing live is measured from real audio and can't be shifted for real. Just "
+            "renames what the row below prints, so a concert Bb into the input reads as C, "
+            "matching what a Bb instrument's own part would call it. Set this to the live "
+            "instrument's transposition.");
         mode.addRow(transposeAudioNote_, 30);
 
         styleToggle(latch_, "Latch key centre");
@@ -982,23 +985,20 @@ public:
 
         voicesSlider_.setEnabled(!voicesAuto_.getToggleState());
 
-        // Transpose never reaches the engine -- keyCentrePc, melodyNote and
-        // everything else on view is real concert pitch. It only renames
-        // what gets printed here, each row from its own control, so a
-        // transposing player reads the same letter off a held key and off
-        // the live input even when those two need different transpositions.
-        // The sliders' own convention (-2 = "Bb", +3 = "Eb", +5 = "F") is
-        // concert = written + transpose, so going the other way to print the
-        // written name is written = concert - transpose.
-        const int keyTranspose = view.keyTransposeSemitones;
+        // Keys Transpose already moved keyCentrePc for real (see
+        // collectKeys()), so it prints straight, no further conversion here.
+        // Audio In Transpose can't touch melodyNote -- it's read from real
+        // sound -- so the editor is the only place it's ever applied, and
+        // only to what gets printed: written = concert -
+        // melodyTransposeSemitones, matching the slider's own convention
+        // that -2/+3/+5 are Bb/Eb/F.
         const int melodyTranspose = view.melodyTransposeSemitones;
-        const int displayKeyPc = ((view.keyCentrePc - keyTranspose) % 12 + 12) % 12;
 
         if (view.keyCentrePc >= 0 && (view.heldKeys > 0 || view.keyLatched)) {
             juce::String tag;
             if (view.keyLatched) tag += "  (latched)";
             if (view.sustainHeld) tag += "  [sustain]";
-            keyRow_->setValue(juce::String(jazz::pitchClassName(displayKeyPc)) +
+            keyRow_->setValue(juce::String(jazz::pitchClassName(view.keyCentrePc)) +
                               (view.minorKey ? " minor" : " major") + tag);
         } else {
             keyRow_->setValue(view.sustainHeld ? "sustain down, but nothing latched yet"

@@ -458,17 +458,16 @@ static void testJazzChordMode() {
     }
 }
 
-// Transpose is a pure display transform, on two independent controls -- one
-// for the held keys naming a key centre, one for the live audio melody --
-// and neither ever reaches the engine. The key centre and melody note it
-// actually names (and what sounds) stay real concert pitch regardless of
-// either setting; the editor renames each one for a transposing player, via
-// written = concert - transposeSemitones, from its own control. This test
-// holds a concert Bb key with keys-transpose left at 0 and plays a concert Bb
-// melody with audio-in-transpose set to Bb (-2) -- the exact case that
-// motivated this: the same real pitch class shows "Bb" from one control and
-// "C" from the other, proving they're independent, and that a concert Bb
-// played live reads as C exactly like the user's example.
+// Keys Transpose and Audio In Transpose do genuinely different things.
+// Keys Transpose is real: added to every held key before it names a key
+// centre, so holding a familiar key while reading a transposing
+// instrument's chart actually changes what key the chord is built in --
+// this test confirms holding concert C with Keys Transpose set to Bb (-2)
+// really does put the engine in the key of concert Bb, answering "can I
+// hold C to play in concert Bb?" with yes. Audio In Transpose can't work
+// that way -- the melody note is measured from real sound, so it stays
+// real and untouched regardless of the setting; only the editor's display
+// formula (written = concert - melodyTransposeSemitones) ever uses it.
 static void testJazzTranspose() {
     std::printf("\n-- Jazz transpose --\n");
     const double sr = 48000.0;
@@ -477,7 +476,7 @@ static void testJazzTranspose() {
     HarmonizerAudioProcessor p;
     setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
-    setValue(p, HarmonizerAudioProcessor::ParamId::jazzTranspose, 0.0f);           // keys: concert
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzTranspose, -2.0f);          // keys: Bb instrument
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzTransposeAudioIn, -2.0f);   // audio: Bb instrument
     p.setPlayConfigDetails(1, 1, sr, 256);
     p.prepareToPlay(sr, 256);
@@ -492,28 +491,27 @@ static void testJazzTranspose() {
         buffer.setSize(1, n, false, false, true);
         juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
         juce::MidiBuffer midi;
-        // Concert Bb on the keys too.
-        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 70, 0.8f), 0); sent = true; }
+        // Concert C on the keys -- with Keys Transpose at Bb, this should
+        // really put the key centre in concert Bb, not just label it that.
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
         p.processBlock(buffer, midi);
     }
     const auto v = p.jazzView();
-    check(v.sounding && v.keyCentrePc == 10 && v.melodyNote % 12 == 10,
-          juce::String("concert Bb held and played still names real key centre ") +
+    check(v.sounding && v.keyCentrePc == 10,
+          juce::String("holding concert C with Keys Transpose set to Bb (-2) names the real key "
+                       "centre ") +
               (v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?") +
-              " and real melody pitch class " + juce::String(v.melodyNote % 12) +
-              " -- transpose must never shift what the engine hears");
-    check(v.keyTransposeSemitones == 0 && v.melodyTransposeSemitones == -2,
-          "the published view echoes each transpose parameter independently for the editor to "
-          "display with");
-
-    const int writtenKeyPc = ((v.keyCentrePc - v.keyTransposeSemitones) % 12 + 12) % 12;
-    check(writtenKeyPc == 10,
-          juce::String("real key centre Bb displayed under keys-transpose 0 (concert) reads as ") +
-              jazz::pitchClassName(writtenKeyPc) + ", expected Bb");
+              " -- Keys Transpose must actually change what key the engine builds in, not just "
+              "how it's labelled");
+    check(v.melodyNote % 12 == 10,
+          juce::String("Audio In Transpose must never shift the real, measured melody pitch -- "
+                       "got pitch class ") + juce::String(v.melodyNote % 12) + ", expected 10 (Bb)");
+    check(v.melodyTransposeSemitones == -2,
+          "the published view echoes Audio In Transpose for the editor to display with");
 
     const int writtenMelodyPc = ((v.melodyNote - v.melodyTransposeSemitones) % 12 + 12) % 12;
     check(writtenMelodyPc == 0,
-          juce::String("real melody Bb displayed under audio-in-transpose -2 (Bb) reads as ") +
+          juce::String("real melody Bb displayed under Audio In Transpose -2 (Bb) reads as ") +
               jazz::pitchClassName(writtenMelodyPc) + ", expected C");
 }
 
