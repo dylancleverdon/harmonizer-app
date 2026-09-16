@@ -36,7 +36,8 @@ jobs:
         run: |
           clang++ -std=c++17 -O2 -Wall -Wextra \
             -Iplugin/Source \
-            plugin/Tests/JazzHarness.cpp plugin/Source/JazzVoicer.cpp -o jazztest
+            plugin/Tests/JazzHarness.cpp plugin/Source/JazzVoicer.cpp \
+            plugin/Source/JazzMidiImport.cpp -o jazztest
       - name: Run key centre, dictionary, range and voice-leading checks
         run: ./jazztest
 
