@@ -270,11 +270,18 @@ turns its matched note-on/note-off pairs into the tick-based note list the
 analysis wants, and writes the result into the same parameters the keyboard
 editor does.
 
-Transpose, latch and sustain live entirely in `PluginProcessor`'s
-`processBlock()`/`jazzUpdate()` -- held keys are read through
-`collectTransposedKeys()` everywhere rather than straight from the raw MIDI
-state, so latch capture and the live reading never disagree about what
-transpose did to them. Glide is the one piece that reaches into the shared
+Latch and sustain live entirely in `PluginProcessor`'s
+`processBlock()`/`jazzUpdate()` -- held keys are read through `collectKeys()`
+everywhere rather than straight from the raw MIDI state, so latch capture and
+the live reading never disagree. Transpose never reaches this: it is a pure
+display transform, applied only in `PluginEditor` when naming the key centre
+and the live melody note (`written = concert - transposeSemitones`, matching
+the slider's own convention that -2/+3/+5 are Bb/Eb/F). The engine, the
+voicer and every value on `JazzView` besides `transposeSemitones` itself stay
+real concert pitch -- what the key centre and the melody actually are was
+never going to agree with each other under a shift applied to only one of
+them, since the melody note comes from live audio and can't be transposed to
+match. Glide is the one piece that reaches into the shared
 engine, and the only place jazz mode's voice matching lives is
 `PluginProcessor::jazzApply()` -- the engine itself has no idea a "chord"
 exists, only individual voices.

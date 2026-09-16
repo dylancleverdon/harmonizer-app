@@ -664,7 +664,7 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             // updates the lowest note correctly.
             if (jazzOn && (pJazzLatchKeys_->load() > 0.5f || jazzSustainHeld_.load())) {
                 int keys[16];
-                const int count = collectTransposedKeys(keys, 16);
+                const int count = collectKeys(keys, 16);
                 latchKeysFrom(keys, count);
             }
         } else if (message.isNoteOff()) {
@@ -765,11 +765,10 @@ int HarmonizerAudioProcessor::transposeSemitones() const {
     return static_cast<int>(std::lround(pJazzTranspose_->load()));
 }
 
-int HarmonizerAudioProcessor::collectTransposedKeys(int* keys, int maxKeys) const {
+int HarmonizerAudioProcessor::collectKeys(int* keys, int maxKeys) const {
     int count = 0;
-    const int transpose = transposeSemitones();
     for (int note = 0; note < 128 && count < maxKeys; ++note) {
-        if (hostKeyDown_[note]) keys[count++] = juce::jlimit(0, 127, note + transpose);
+        if (hostKeyDown_[note]) keys[count++] = note;
     }
     return count;
 }
@@ -991,7 +990,7 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     }
 
     int liveKeys[16];
-    const int liveKeyCount = collectTransposedKeys(liveKeys, 16);
+    const int liveKeyCount = collectKeys(liveKeys, 16);
     jvHeldKeys_.store(liveKeyCount);
 
     // Latch (the toggle, or the sustain pedal standing in for it while held)
@@ -1019,7 +1018,7 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         for (int i = 0; i < liveKeyCount && i < 2; ++i) keys[i] = liveKeys[i];
         keyCount = juce::jmin(liveKeyCount, 2);
         // More than two keys held only ever changes which is lowest, already
-        // reflected by collectTransposedKeys() being in ascending note order;
+        // reflected by collectKeys() being in ascending note order;
         // Voicer::update() only reads the first entry and the count.
         if (liveKeyCount > 2) keyCount = 2;
     }
@@ -1144,6 +1143,7 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.rangeLimited = jvLimited_.load();
     v.windowLow = jvWindowLow_.load();
     v.windowHigh = jvWindowHigh_.load();
+    v.transposeSemitones = transposeSemitones();
     return v;
 }
 

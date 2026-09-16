@@ -427,9 +427,10 @@ public:
         styleSlider(transposeSlider_);
         mode.addRow(transposeSlider_, 24);
         transposeNote_.setText(
-            "Shifts the keys you hold before they name a key centre -- never the note you play, "
-            "which is measured from real sound and is concert pitch already. Set this to your "
-            "instrument's transposition and hold keys using its written pitch.");
+            "Display only -- never touches the chord or how it sounds. Renames the key centre "
+            "and the note you're playing the way your instrument's part would read them, so a "
+            "concert Bb reads as the same letter whether it came from a held key or the live "
+            "input. Set this to your instrument's transposition.");
         mode.addRow(transposeNote_, 30);
 
         styleToggle(latch_, "Latch key centre");
@@ -969,11 +970,21 @@ public:
 
         voicesSlider_.setEnabled(!voicesAuto_.getToggleState());
 
+        // Transpose never reaches the engine -- keyCentrePc, melodyNote and
+        // everything else on view is real concert pitch. It only renames
+        // what gets printed here, so a transposing player reads the same
+        // letter off a held key and off the live input. The slider's own
+        // convention (-2 = "Bb", +3 = "Eb", +5 = "F") is concert = written +
+        // transpose, so going the other way to print the written name is
+        // written = concert - transpose.
+        const int transpose = view.transposeSemitones;
+        const int displayKeyPc = ((view.keyCentrePc - transpose) % 12 + 12) % 12;
+
         if (view.keyCentrePc >= 0 && (view.heldKeys > 0 || view.keyLatched)) {
             juce::String tag;
             if (view.keyLatched) tag += "  (latched)";
             if (view.sustainHeld) tag += "  [sustain]";
-            keyRow_->setValue(juce::String(jazz::pitchClassName(view.keyCentrePc)) +
+            keyRow_->setValue(juce::String(jazz::pitchClassName(displayKeyPc)) +
                               (view.minorKey ? " minor" : " major") + tag);
         } else {
             keyRow_->setValue(view.sustainHeld ? "sustain down, but nothing latched yet"
@@ -981,9 +992,9 @@ public:
         }
 
         if (view.melodyNote >= 0 && view.melodyHz > 0.0f) {
-            playingRow_->setValue(flatNoteName(view.melodyNote) + "  " +
-                                  juce::String(juce::roundToInt(view.melodyHz)) + " Hz  -  the " +
-                                  jazz::degreeName(view.melodyDegree));
+            playingRow_->setValue(flatNoteName(juce::jlimit(0, 127, view.melodyNote - transpose)) +
+                                  "  " + juce::String(juce::roundToInt(view.melodyHz)) +
+                                  " Hz  -  the " + jazz::degreeName(view.melodyDegree));
         } else {
             playingRow_->setValue("no pitch yet");
         }

@@ -106,6 +106,12 @@ public:
         int   windowLow = 0;
         int   windowHigh = 127;
         const char* roman = "";
+        // Display only -- keyCentrePc, melodyNote, chordRootPc and notes[]
+        // above are all real concert pitch, exactly what the engine used.
+        // The editor adds this when naming them, so a transposing player
+        // reads the names their part would use without the engine itself
+        // ever seeing a shifted note.
+        int   transposeSemitones = 0;
     };
     JazzView jazzView() const;
 
@@ -347,13 +353,22 @@ private:
     // is from the audio thread.
     std::atomic<bool> jazzSustainHeld_{false};
 
-    /** Currently held keys, each shifted by the transpose parameter -- what
-     *  every reading of hostKeyDown_ should use instead of the raw notes, so
-     *  latch capture and the live reading in jazzUpdate() never disagree. */
-    int collectTransposedKeys(int* keys, int maxKeys) const;
+    /** Currently held keys, in ascending order -- what every reading of
+     *  hostKeyDown_ should use instead of walking the raw array by hand, so
+     *  latch capture and the live reading in jazzUpdate() never disagree.
+     *  Concert pitch, always -- transpose never reaches this. It is a
+     *  read-only display convenience (see transposeSemitones()), not an
+     *  input to the engine: shifting it here would detune the key centre
+     *  against the melody note, which is measured from real audio and can't
+     *  be transposed to match. */
+    int collectKeys(int* keys, int maxKeys) const;
+
+    /** The transpose control's value, for display only -- e.g. naming the key
+     *  centre and the note you're playing the way a transposing instrument's
+     *  part would read them. Never applied to anything the engine sees. */
     int transposeSemitones() const;
 
-    /** Captures a fresh latch from a set of (already transposed) keys --
+    /** Captures a fresh latch from a set of keys (concert pitch) --
      *  lowest key names the centre, two or more means minor. */
     void latchKeysFrom(const int* keys, int count);
 

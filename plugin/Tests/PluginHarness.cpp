@@ -458,8 +458,12 @@ static void testJazzChordMode() {
     }
 }
 
-// Transpose shifts the held keys, not the melody -- a Bb-trumpet player can
-// hold "C" (their written key) and have it read as concert Bb.
+// Transpose is a pure display transform -- it never reaches the engine, so
+// the key centre it actually names (and what sounds) stays real concert
+// pitch regardless of the setting. The editor is what renames it for a
+// transposing player, via written = concert - transposeSemitones; this test
+// checks the engine side never moves, and that the published transpose value
+// still reproduces the right written name under that same formula.
 static void testJazzTranspose() {
     std::printf("\n-- Jazz transpose --\n");
     const double sr = 48000.0;
@@ -482,13 +486,24 @@ static void testJazzTranspose() {
         buffer.setSize(1, n, false, false, true);
         juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
         juce::MidiBuffer midi;
-        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }   // "C"
+        // Concert Bb -- the exact case that motivated this: hitting a concert
+        // Bb on a controller key should read as C once transpose is set for
+        // a Bb instrument, the same as a concert Bb played live would.
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 70, 0.8f), 0); sent = true; }
         p.processBlock(buffer, midi);
     }
     const auto v = p.jazzView();
     check(v.sounding && v.keyCentrePc == 10,
-          juce::String("holding C with transpose set to Bb (-2) reads as key centre ") +
-              (v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?"));
+          juce::String("holding concert Bb with transpose set to Bb (-2) still names the real "
+                       "key centre ") +
+              (v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?") +
+              " -- transpose must never shift what the engine hears");
+    check(v.transposeSemitones == -2,
+          "the published view echoes the transpose parameter for the editor to display with");
+    const int writtenPc = ((v.keyCentrePc - v.transposeSemitones) % 12 + 12) % 12;
+    check(writtenPc == 0,
+          juce::String("real key centre Bb displayed under transpose -2 (Bb) reads as ") +
+              jazz::pitchClassName(writtenPc) + ", expected C");
 }
 
 // Latch freezes the key centre against key releases: it only ever updates
