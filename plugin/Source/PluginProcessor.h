@@ -133,6 +133,7 @@ public:
         static constexpr const char* jazzRangeHigh = "jazzRangeHigh";
         static constexpr const char* jazzSmoothness = "jazzSmoothness";
         static constexpr const char* jazzVoices = "jazzVoices";
+        static constexpr const char* jazzVoicesAuto = "jazzVoicesAuto";
         static constexpr const char* jazzShuffle = "jazzShuffle";
         static constexpr const char* jazzDouble = "jazzDouble";
         // One per voicing style, in jazz::Style order.
@@ -285,6 +286,7 @@ private:
     std::atomic<float>* pJazzRangeHigh_ = nullptr;
     std::atomic<float>* pJazzSmoothness_ = nullptr;
     std::atomic<float>* pJazzVoices_ = nullptr;
+    std::atomic<float>* pJazzVoicesAuto_ = nullptr;
     std::atomic<float>* pJazzShuffle_ = nullptr;
     std::atomic<float>* pJazzDouble_ = nullptr;
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};

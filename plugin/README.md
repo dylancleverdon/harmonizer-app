@@ -87,7 +87,10 @@ chord symbol follows what is switched on — the spelling is handled for you, so
 dominant takes a `#11` rather than the natural 11 that sits a semitone off its
 third, and an altered dominant takes `b9`, `#11` and `b13`. **Harmony voices**
 caps how many notes sound; past the cap the fifth goes first and then the root,
-the two tones that say least about the chord.
+the two tones that say least about the chord. **Auto** ignores that cap
+entirely and plays exactly as many voices as the chord actually has — a
+custom voicing's own note count, or the built-in chord's three plus whichever
+extensions are switched on — rather than a number picked ahead of time.
 
 ### Where the chord sits
 
@@ -135,9 +138,11 @@ here too without anything having to enforce it: you are always a tone of the
 chord, its root. It is written once in terms of the key centre, the same way
 the built-in dictionary is, so building it once already covers all twelve
 keys -- naming a key centre just transposes it, and it does not matter which
-octave you play the note in either, only which one it is. The degree buttons
-are labelled as concrete notes over a held C, as a worked example: to see
-exactly what plays for a C5 on your horn over a held C, select "C".
+octave you play the note in either, only which one it is. **Show it over this
+key** picks which key the degree buttons and the keyboard are shown relative
+to -- purely a display and editing convenience, changing nothing about what
+is stored -- so to see exactly what plays for a C5 on your horn over a held
+G, select G there and then D as the degree (a fifth above G).
 
 Major and minor are separate, independent toggles, and so is every individual
 degree within them: leaving a degree blank falls back to the **built-in**
@@ -150,9 +155,10 @@ mode; extensions and voicing style do not, since a voicing you built yourself
 already says exactly what it wants to be.
 
 **Record** builds a voicing by ear instead of by clicking: press it, play the
-chord on your MIDI controller as if the key you were holding were C -- the
-same reference the keyboard uses -- and every note you play joins it, shown
-highlighted live. **Reset** clears what has been captured without leaving
+chord on your MIDI controller as if the key you were holding were the one
+selected in **Show it over this key** -- the same reference the keyboard
+uses -- and every note you play joins it, shown highlighted live. **Reset**
+clears what has been captured without leaving
 record mode; **Save** writes it to the selected degree.
 
 **Copy this voicing to** moves a finished voicing to another note or context,

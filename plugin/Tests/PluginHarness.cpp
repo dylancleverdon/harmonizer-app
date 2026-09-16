@@ -458,6 +458,57 @@ static void testJazzChordMode() {
     }
 }
 
+// Auto harmony voices ignores the Chord Voices slider entirely and lets
+// through exactly as many notes as the chord naturally has -- extensions
+// included -- rather than the number picked ahead of time.
+static void testJazzAutoVoices() {
+    std::printf("\n-- Auto harmony voices --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;   // A3, MIDI 57 -- degree 9 (the sixth) above a held C
+
+    const auto run = [&](bool autoVoices) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzNinth, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzEleventh, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzThirteenth, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoices, 2.0f);   // a tight cap...
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoicesAuto, autoVoices ? 1.0f : 0.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeLow, 24.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeHigh, 108.0f);
+
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+        return p.jazzView();
+    };
+
+    const auto capped = run(false);
+    check(capped.sounding && capped.noteCount <= 2,
+          juce::String("without auto, a tight cap holds (got ") + juce::String(capped.noteCount) +
+              " voices)");
+
+    const auto autoResult = run(true);
+    check(autoResult.sounding && autoResult.noteCount > 2,
+          juce::String("with auto on, the same tight cap is ignored and the whole extended chord "
+                       "plays (got ") +
+              juce::String(autoResult.noteCount) + " voices)");
+}
+
 // The custom chord dictionary is a plugin-only layer over jazz mode's own
 // chords: off by default (jazz mode is unchanged), and switched on it hands
 // the chosen chord type straight through the engine the same way the
@@ -804,6 +855,7 @@ int main() {
     testSidechainInput();
     testSilentMainBusDoesNotAttenuate();
     testJazzChordMode();
+    testJazzAutoVoices();
     testJazzCustomDictionary();
 
     std::printf("\n=============================================\n");

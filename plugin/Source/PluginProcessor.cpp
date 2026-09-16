@@ -113,6 +113,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzRangeHigh_ = apvts.getRawParameterValue(ParamId::jazzRangeHigh);
     pJazzSmoothness_ = apvts.getRawParameterValue(ParamId::jazzSmoothness);
     pJazzVoices_ = apvts.getRawParameterValue(ParamId::jazzVoices);
+    pJazzVoicesAuto_ = apvts.getRawParameterValue(ParamId::jazzVoicesAuto);
     pJazzShuffle_ = apvts.getRawParameterValue(ParamId::jazzShuffle);
     pJazzDouble_ = apvts.getRawParameterValue(ParamId::jazzDouble);
     for (int i = 0; i < jazz::kStyleCount; ++i) {
@@ -235,6 +236,13 @@ HarmonizerAudioProcessor::createLayout() {
     layout.add(std::make_unique<AudioParameterInt>(
         ParameterID{ParamId::jazzVoices, 1}, "Chord Voices", 2, jazz::kMaxVoicingNotes, 5));
 
+    // Auto ignores the slider above and lets the chord's own note count
+    // through unmodified -- a custom voicing's exact tone count, or the
+    // built-in chord's (three plus whichever extensions are switched on) --
+    // rather than capping it to a number picked ahead of time.
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzVoicesAuto, 1}, "Auto Chord Voices", false));
+
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzShuffle, 1}, "Shuffle Voicings", false));
     layout.add(std::make_unique<AudioParameterBool>(
@@ -315,7 +323,9 @@ jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
     s.rangeLow = static_cast<int>(std::lround(pJazzRangeLow_->load()));
     s.rangeHigh = static_cast<int>(std::lround(pJazzRangeHigh_->load()));
     s.smoothness = pJazzSmoothness_->load();
-    s.maxNotes = static_cast<int>(std::lround(pJazzVoices_->load()));
+    s.maxNotes = pJazzVoicesAuto_->load() > 0.5f
+                     ? jazz::kMaxVoicingNotes
+                     : static_cast<int>(std::lround(pJazzVoices_->load()));
     s.shuffle = pJazzShuffle_->load() > 0.5f;
     s.doubleMelody = pJazzDouble_->load() > 0.5f;
     for (int i = 0; i < jazz::kStyleCount; ++i) {
