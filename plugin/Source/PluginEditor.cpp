@@ -10,6 +10,12 @@ juce::String noteName(int note) {
     return juce::String(names[note % 12]) + juce::String(note / 12 - 1);
 }
 
+/** The same note spelled in flats, as the jazz chord symbols are. */
+juce::String flatNoteName(int note) {
+    if (note < 0) return "-";
+    return juce::String(jazz::pitchClassName(note)) + juce::String(note / 12 - 1);
+}
+
 void styleToggle(juce::ToggleButton& b, const juce::String& label) {
     b.setButtonText(label);
     b.setColour(juce::ToggleButton::textColourId, look::text);
@@ -96,6 +102,29 @@ void ChipGroup::resized() {
         const int w = (i == chips_.size() - 1) ? getWidth() - x : each;
         chips_[i]->setBounds(x, 0, w, getHeight());
         x += w + gap;
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+void Grid::add(juce::Component& c) {
+    items_.push_back(&c);
+    addAndMakeVisible(c);
+}
+
+int Grid::preferredHeight() const {
+    const int rows = (static_cast<int>(items_.size()) + columns_ - 1) / columns_;
+    return rows * rowHeight_;
+}
+
+void Grid::resized() {
+    if (items_.empty()) return;
+    const int columnWidth = getWidth() / columns_;
+    for (size_t i = 0; i < items_.size(); ++i) {
+        const int column = static_cast<int>(i) % columns_;
+        const int row = static_cast<int>(i) / columns_;
+        items_[i]->setBounds(column * columnWidth, row * rowHeight_, columnWidth - 6,
+                             rowHeight_ - 4);
     }
 }
 
@@ -214,7 +243,8 @@ public:
         voiceDots_.setActive(m.activeVoices);
 
         const int mode = harmonyChips_->selectedIndex();
-        const auto d = diagnose(m, t, mainLive, sideLive, midiEver, mode);
+        const auto jazz = processor_.jazzView();
+        const auto d = diagnose(m, t, mainLive, sideLive, midiEver, mode, jazz);
         diagnosis_.setText(d.first, d.second);
 
         mixRow_->setValue(juce::String(juce::roundToInt(
@@ -227,9 +257,16 @@ public:
         hostRow_->setValue(juce::String(juce::roundToInt(hostRate)) + " Hz / " +
                            juce::String(hostBlock) + " frames");
 
-        harmonyNote_.setText(harmonyDescription(mode));
+        if (jazz.enabled) {
+            harmonyNote_.setText("Jazz chord mode is running -- see the Jazz page. It picks the "
+                                 "chord and feeds the engine the notes itself, so these three "
+                                 "modes stand down until you switch it off.",
+                                 look::accent);
+        } else {
+            harmonyNote_.setText(harmonyDescription(mode));
+        }
 
-        const bool chord = mode == 2;
+        const bool chord = mode == 2 && !jazz.enabled;
         degreeLabel_.setVisible(chord);
         degreeChips_->setVisible(chord);
         doubleAnchor_.setVisible(chord);
@@ -272,7 +309,8 @@ private:
 
     std::pair<juce::String, juce::Colour> diagnose(
         const dsp::Metrics& m, const HarmonizerAudioProcessor::Traffic& t, bool mainLive,
-        bool sideLive, bool midiEver, int mode) const {
+        bool sideLive, bool midiEver, int mode,
+        const HarmonizerAudioProcessor::JazzView& jazz) const {
         const bool anyAudio = mainLive || sideLive;
         if (t.mainChannels == 0 && t.sideChannels == 0) {
             return {"The host is not sending this plugin any audio at all.", look::warn};
@@ -290,6 +328,12 @@ private:
             return {"Audio is coming through, but no MIDI notes have arrived yet.", look::warn};
         }
         if (m.activeVoices == 0) {
+            if (jazz.enabled) {
+                if (jazz.heldKeys == 0) {
+                    return {"Jazz chord mode: hold a key to name the key centre.", look::warn};
+                }
+                return {"Jazz chord mode: waiting for a steady pitch on the input.", look::warn};
+            }
             if (mode == 2 && m.rootNote >= 0) {
                 return {"That is only your own note - hold at least two.", look::warn};
             }
@@ -317,6 +361,263 @@ private:
 
     int lastMidiCount_ = 0;
     juce::uint32 lastMainMs_ = 0, lastSideMs_ = 0, lastMidiMs_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Jazz page: the chord dictionary, and everything about how its chords are
+// voiced. This mode exists only in the plugin -- the app does not ship it.
+// ---------------------------------------------------------------------------
+
+class JazzPage final : public Page {
+public:
+    explicit JazzPage(HarmonizerAudioProcessor& p) : processor_(p) {
+        auto& apvts = processor_.apvts;
+        using P = HarmonizerAudioProcessor::ParamId;
+        using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
+        using SA = juce::AudioProcessorValueTreeState::SliderAttachment;
+
+        // --- What it is doing right now.
+        auto& mode = addCard("Jazz chord mode");
+        styleToggle(enable_, "Jazz chord mode");
+        mode.addRow(enable_, 24);
+        intro_.setText("Hold one key to name a major key centre, or two for a minor one on the "
+                       "lower key. Whatever you play into the input is read as a degree of that "
+                       "key, and the chord this dictionary keeps for that degree is voiced "
+                       "around your note.");
+        mode.addRow(intro_, 58);
+
+        keyRow_ = std::make_unique<look::StatRow>("Key centre", true);
+        playingRow_ = std::make_unique<look::StatRow>("You are playing");
+        chordRow_ = std::make_unique<look::StatRow>("Chord", true);
+        voicingRow_ = std::make_unique<look::StatRow>("Voicing");
+        mode.addRow(*keyRow_, 20);
+        mode.addRow(*playingRow_, 18);
+        mode.addRow(*chordRow_, 20);
+        mode.addRow(*voicingRow_, 18);
+        status_.setText("");
+        mode.addRow(status_, 30);
+
+        // --- Which tones are in the chord.
+        auto& tones = addCard("Chord tones");
+        tonesNote_.setText("Sevenths are always in. These stack on top of them, and the chord "
+                           "symbol above follows what is switched on.");
+        tones.addRow(tonesNote_, 28);
+        styleToggle(ninth_, "9ths");
+        styleToggle(eleventh_, "11ths");
+        styleToggle(thirteenth_, "13ths");
+        toneGrid_.add(ninth_);
+        toneGrid_.add(eleventh_);
+        toneGrid_.add(thirteenth_);
+        tones.addRow(toneGrid_, toneGrid_.preferredHeight());
+        voicesLabel_.setText("HARMONY VOICES", look::muted);
+        tones.addRow(voicesLabel_, 14);
+        styleSlider(voicesSlider_);
+        tones.addRow(voicesSlider_, 24);
+        voicesNote_.setText("How many notes the chord may sound. Past this the fifth goes first, "
+                            "then the root -- the tones that say least about the chord.");
+        tones.addRow(voicesNote_, 28);
+
+        // --- Register.
+        auto& sits = addCard("Where the chord sits");
+        octaveLabel_.setText("OCTAVE", look::muted);
+        sits.addRow(octaveLabel_, 14);
+        octaveChips_ = std::make_unique<ChipGroup>(
+            apvts, P::jazzOctave, juce::StringArray{"-2", "-1", "0", "+1", "+2"});
+        sits.addRow(*octaveChips_, 28);
+
+        inversionLabel_.setText("INVERSION", look::muted);
+        sits.addRow(inversionLabel_, 14);
+        inversionChips_ = std::make_unique<ChipGroup>(
+            apvts, P::jazzInversion,
+            juce::StringArray{"-3", "-2", "-1", "0", "+1", "+2", "+3"});
+        sits.addRow(*inversionChips_, 28);
+        shiftNote_.setText("The octave moves the chord a whole octave; an inversion moves it by "
+                           "one of its own voices, taking the top note down instead of the whole "
+                           "chord. Down an inversion leaves your note sitting higher in the "
+                           "harmony; up an inversion buries it.");
+        sits.addRow(shiftNote_, 58);
+
+        rangeLabel_.setText("RANGE", look::muted);
+        sits.addRow(rangeLabel_, 14);
+        styleSlider(lowSlider_);
+        styleSlider(highSlider_);
+        sits.addRow(lowSlider_, 24);
+        sits.addRow(highSlider_, 24);
+        rangeRow_ = std::make_unique<look::StatRow>("Chords live between");
+        sits.addRow(*rangeRow_, 18);
+        rangeNote_.setText("Nothing sounds outside this window. Widening it lets each chord find "
+                           "its own best register; tightening it forces successive chords to "
+                           "share registers, which is the bluntest way to smooth the voice "
+                           "leading.");
+        sits.addRow(rangeNote_, 58);
+
+        // --- Voice leading.
+        auto& leading = addCard("Voice leading");
+        styleSlider(smoothSlider_);
+        leading.addRow(smoothSlider_, 24);
+        smoothRow_ = std::make_unique<look::StatRow>("Smoothness");
+        leading.addRow(*smoothRow_, 18);
+        smoothNote_.setText("At 0 every chord is voiced in its own best register, wherever that "
+                            "leaves the last one. At 100 the voicing that moves least from the "
+                            "chord before it wins, even if that means an odd register.");
+        leading.addRow(smoothNote_, 44);
+
+        // --- Styles.
+        auto& styles = addCard("Voicing style");
+        stylesNote_.setText("Choose as many as you like and the best of them for the moment is "
+                            "used. Choose none and every style is a candidate -- which is the "
+                            "setting to leave it on if you would rather not think about it.");
+        styles.addRow(stylesNote_, 44);
+        for (int i = 0; i < jazz::kStyleCount; ++i) {
+            styleToggle(*styleToggles_.add(new juce::ToggleButton()),
+                        HarmonizerAudioProcessor::kJazzStyleNames[i]);
+            styleGrid_.add(*styleToggles_[i]);
+        }
+        styles.addRow(styleGrid_, styleGrid_.preferredHeight());
+        styleToggle(shuffle_, "Shuffle between the chosen styles");
+        styles.addRow(shuffle_, 24);
+        shuffleNote_.setText("Varies which of the chosen styles a new chord gets, instead of "
+                             "always taking the highest-scoring one. It only ever picks from "
+                             "what you have selected, and never mid-chord.");
+        styles.addRow(shuffleNote_, 30);
+        styleToggle(double_, "Double your own note");
+        styles.addRow(double_, 24);
+        doubleNote_.setText("Off, the chord tone you are already playing is left out, so the "
+                            "harmony sits around you. On, it is resynthesised too -- worth it "
+                            "when you are running fully wet.");
+        styles.addRow(doubleNote_, 30);
+
+        aEnable_ = std::make_unique<BA>(apvts, P::jazzMode, enable_);
+        aNinth_ = std::make_unique<BA>(apvts, P::jazzNinth, ninth_);
+        aEleventh_ = std::make_unique<BA>(apvts, P::jazzEleventh, eleventh_);
+        aThirteenth_ = std::make_unique<BA>(apvts, P::jazzThirteenth, thirteenth_);
+        aShuffle_ = std::make_unique<BA>(apvts, P::jazzShuffle, shuffle_);
+        aDouble_ = std::make_unique<BA>(apvts, P::jazzDouble, double_);
+        for (int i = 0; i < jazz::kStyleCount; ++i) {
+            aStyles_.add(new BA(apvts, P::jazzStyle[i], *styleToggles_[i]));
+        }
+        aLow_ = std::make_unique<SA>(apvts, P::jazzRangeLow, lowSlider_);
+        aHigh_ = std::make_unique<SA>(apvts, P::jazzRangeHigh, highSlider_);
+        aSmooth_ = std::make_unique<SA>(apvts, P::jazzSmoothness, smoothSlider_);
+        aVoices_ = std::make_unique<SA>(apvts, P::jazzVoices, voicesSlider_);
+
+        lowSlider_.textFromValueFunction = [](double v) {
+            return flatNoteName(static_cast<int>(v));
+        };
+        highSlider_.textFromValueFunction = lowSlider_.textFromValueFunction;
+        smoothSlider_.textFromValueFunction = [](double v) {
+            return juce::String(juce::roundToInt(v * 100.0)) + " %";
+        };
+        smoothSlider_.valueFromTextFunction = [](const juce::String& s) {
+            return s.getDoubleValue() / 100.0;
+        };
+        lowSlider_.updateText();
+        highSlider_.updateText();
+        smoothSlider_.updateText();
+    }
+
+    void refresh() {
+        const auto view = processor_.jazzView();
+        const auto settings = processor_.jazzSettings();
+
+        keyRow_->setValue(view.heldKeys == 0
+                              ? juce::String("hold a key")
+                              : juce::String(jazz::pitchClassName(view.keyCentrePc)) +
+                                    (view.minorKey ? " minor" : " major"));
+
+        if (view.melodyNote >= 0 && view.melodyHz > 0.0f) {
+            playingRow_->setValue(flatNoteName(view.melodyNote) + "  " +
+                                  juce::String(juce::roundToInt(view.melodyHz)) + " Hz  -  the " +
+                                  jazz::degreeName(view.melodyDegree));
+        } else {
+            playingRow_->setValue("no pitch yet");
+        }
+
+        if (view.sounding && view.chordRootPc >= 0) {
+            // Rebuilt from the published snapshot rather than kept as a string,
+            // so the audio thread never has to format anything.
+            jazz::Voicing voicing;
+            voicing.chordRootPc = view.chordRootPc;
+            voicing.type = static_cast<jazz::ChordType>(view.typeIndex);
+            char symbol[32] = {};
+            jazz::chordSymbol(voicing, settings, symbol, sizeof(symbol));
+            chordRow_->setValue(juce::String(symbol) + "   " + juce::String(view.roman));
+
+            juce::String notes;
+            for (int i = 0; i < view.noteCount; ++i) {
+                if (view.notes[i] < 0) continue;
+                notes += (notes.isEmpty() ? "" : " ") + flatNoteName(view.notes[i]);
+            }
+            voicingRow_->setValue(
+                juce::String(jazz::styleName(static_cast<jazz::Style>(view.styleIndex))) +
+                "  -  " + notes);
+        } else {
+            chordRow_->setValue("-");
+            voicingRow_->setValue("-");
+        }
+
+        if (!view.enabled) {
+            status_.setText("Switched off. The harmony mode on the main page is in charge.",
+                            look::muted);
+        } else if (view.heldKeys == 0) {
+            status_.setText("Hold a key on your controller to set the key centre.", look::warn);
+        } else if (view.melodyHz <= 0.0f) {
+            status_.setText("Key centre set. Play a note into the input and the chord follows it.",
+                            look::warn);
+        } else if (!view.sounding) {
+            status_.setText("Waiting for a steady pitch to build a chord on.", look::warn);
+        } else {
+            status_.setText("Running - " + juce::String(view.noteCount) + " harmony voice" +
+                                (view.noteCount == 1 ? "." : "s."), look::accent);
+        }
+
+        rangeRow_->setValue(flatNoteName(settings.rangeLow) + " to " +
+                            flatNoteName(settings.rangeHigh) + "  (" +
+                            juce::String(settings.rangeHigh - settings.rangeLow) + " semitones)");
+        smoothRow_->setValue(juce::String(juce::roundToInt(settings.smoothness * 100.0f)) + " %");
+
+        bool anyStyle = false;
+        for (int i = 0; i < jazz::kStyleCount; ++i) anyStyle |= settings.styles[i];
+        stylesNote_.setText(
+            anyStyle ? "Choosing more than one lets the plugin take whichever of them leads best "
+                       "from the chord before it. Clear them all to let it consider every style."
+                     : "Nothing selected: every style is a candidate and the one that leads best "
+                       "from the chord before it wins.",
+            anyStyle ? look::muted : look::accent);
+
+        // A range narrower than an octave has nowhere to put a chord; the voicer
+        // widens it rather than failing, so say so here.
+        rangeNote_.setText(
+            settings.rangeHigh - settings.rangeLow < 12
+                ? juce::String("That range is narrower than an octave, so an octave is used. "
+                               "Widen it to get control back.")
+                : juce::String("Nothing sounds outside this window. Widening it lets each chord "
+                               "find its own best register; tightening it forces successive "
+                               "chords to share registers, which is the bluntest way to smooth "
+                               "the voice leading."),
+            settings.rangeHigh - settings.rangeLow < 12 ? look::warn : look::muted);
+    }
+
+private:
+    HarmonizerAudioProcessor& processor_;
+
+    juce::ToggleButton enable_, ninth_, eleventh_, thirteenth_, shuffle_, double_;
+    juce::OwnedArray<juce::ToggleButton> styleToggles_;
+    Grid toneGrid_{3, 26}, styleGrid_{3, 26};
+
+    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_;
+    std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
+    std::unique_ptr<look::StatRow> keyRow_, playingRow_, chordRow_, voicingRow_, rangeRow_,
+        smoothRow_;
+    look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
+        inversionLabel_, shiftNote_, rangeLabel_, rangeNote_, smoothNote_, stylesNote_,
+        shuffleNote_, doubleNote_;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aEnable_, aNinth_,
+        aEleventh_, aThirteenth_, aShuffle_, aDouble_;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> aStyles_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aLow_, aHigh_,
+        aSmooth_, aVoices_;
 };
 
 // ---------------------------------------------------------------------------
@@ -561,18 +862,25 @@ HarmonizerAudioProcessorEditor::HarmonizerAudioProcessorEditor(HarmonizerAudioPr
     version_.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(version_);
 
-    pageButton_.onClick = [this] { showPage(!showingSettings_); };
+    pageButton_.onClick = [this] {
+        showPage(page_ == PageId::Settings ? PageId::Main : PageId::Settings);
+    };
     addAndMakeVisible(pageButton_);
+    jazzButton_.onClick = [this] {
+        showPage(page_ == PageId::Jazz ? PageId::Main : PageId::Jazz);
+    };
+    addAndMakeVisible(jazzButton_);
     panicButton_.onClick = [this] { processor_.allNotesOff(); };
     addAndMakeVisible(panicButton_);
 
     mainPage_ = std::make_unique<MainPage>(processor_, knobLook_);
+    jazzPage_ = std::make_unique<JazzPage>(processor_);
     settingsPage_ = std::make_unique<SettingsPage>(processor_, updater_);
 
     viewport_.setScrollBarsShown(true, false);
     viewport_.setColour(juce::ScrollBar::thumbColourId, look::surfaceVariant);
     addAndMakeVisible(viewport_);
-    showPage(false);
+    showPage(PageId::Main);
 
     setResizable(true, true);
     setResizeLimits(460, 420, 900, 1200);
@@ -585,12 +893,15 @@ HarmonizerAudioProcessorEditor::~HarmonizerAudioProcessorEditor() {
     viewport_.setViewedComponent(nullptr, false);
 }
 
-void HarmonizerAudioProcessorEditor::showPage(bool settings) {
-    showingSettings_ = settings;
-    pageButton_.setButtonText(settings ? "Back" : "Settings");
-    viewport_.setViewedComponent(settings ? static_cast<juce::Component*>(settingsPage_.get())
-                                          : static_cast<juce::Component*>(mainPage_.get()),
-                                 false);
+void HarmonizerAudioProcessorEditor::showPage(PageId page) {
+    page_ = page;
+    pageButton_.setButtonText(page == PageId::Settings ? "Back" : "Settings");
+    jazzButton_.setButtonText(page == PageId::Jazz ? "Back" : "Jazz");
+
+    juce::Component* view = mainPage_.get();
+    if (page == PageId::Jazz) view = jazzPage_.get();
+    else if (page == PageId::Settings) view = settingsPage_.get();
+    viewport_.setViewedComponent(view, false);
     resized();
 }
 
@@ -599,10 +910,13 @@ void HarmonizerAudioProcessorEditor::paint(juce::Graphics& g) {
 }
 
 void HarmonizerAudioProcessorEditor::resized() {
-    title_.setBounds(16, 10, 240, 30);
-    version_.setBounds(getWidth() - 300, 16, 120, 18);
-    panicButton_.setBounds(getWidth() - 176, 12, 72, 26);
-    pageButton_.setBounds(getWidth() - 98, 12, 86, 26);
+    // Three destinations now, so the version moves under the title rather than
+    // competing with them for the strip along the top.
+    title_.setBounds(16, 6, 200, 26);
+    version_.setBounds(18, 30, 160, 14);
+    panicButton_.setBounds(getWidth() - 232, 12, 62, 26);
+    jazzButton_.setBounds(getWidth() - 164, 12, 62, 26);
+    pageButton_.setBounds(getWidth() - 96, 12, 84, 26);
 
     const auto area = juce::Rectangle<int>(12, 48, getWidth() - 24, getHeight() - 60);
     viewport_.setBounds(area);
@@ -618,10 +932,10 @@ void HarmonizerAudioProcessorEditor::timerCallback() {
     const double rate = processor_.getSampleRate();
     const int block = processor_.getBlockSize();
 
-    if (showingSettings_) {
-        settingsPage_->refresh(m, rate);
-    } else {
-        mainPage_->refresh(m, processor_.traffic(), rate, block);
+    switch (page_) {
+        case PageId::Settings: settingsPage_->refresh(m, rate); break;
+        case PageId::Jazz:     jazzPage_->refresh(); break;
+        default:               mainPage_->refresh(m, processor_.traffic(), rate, block); break;
     }
 
     if (auto* page = dynamic_cast<Page*>(viewport_.getViewedComponent())) {

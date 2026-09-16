@@ -112,7 +112,9 @@ flags it when it sees a Bluetooth output selected.
 
 ## How the harmony is worked out
 
-There are three harmony modes.
+There are three harmony modes. The plugin adds a fourth, **jazz chord mode**,
+which is not in the app — it is documented in
+[plugin/README.md](plugin/README.md#jazz-chord-mode).
 
 **Fixed interval** (the default) treats every MIDI note as an offset in cents from
 middle C, and applies that offset to whatever you are playing:
@@ -352,7 +354,9 @@ tools/dsptest/    offline validation — see tools/dsptest/README.md
 plugin/
   CMakeLists.txt  JUCE build for AU, VST3 and standalone
   Source/         processor, editor, in-plugin updater
+    JazzVoicer    plugin-only jazz chord dictionary and voicer (no JUCE, no engine)
   Tests/          headless checks on the wrapper (parameters, MIDI, latency)
+                  and on the jazz dictionary and its voicings
   Setup/          the guided installer and updater app
   Shared/         install logic shared by the installer and the in-plugin updater
   packaging/      the install scripts shipped inside each archive

@@ -279,6 +279,165 @@ static void testSilentMainBusDoesNotAttenuate() {
     check(viaMain > 0.02f && viaSide > 0.02f && std::fabs(ratioDb) < 1.5, msg);
 }
 
+// Jazz chord mode is the plugin's own layer: the held key names a key centre,
+// the pitch tracker says what is being played, and the chord for that degree is
+// fed to the engine as absolute pitches. The dictionary and the voicing are
+// covered on their own in Tests/JazzHarness.cpp; what matters here is that the
+// two halves are actually connected -- pitch in, chord out, and the host's keys
+// no longer taken as a harmony.
+static void testJazzChordMode() {
+    std::printf("\n-- Jazz chord mode --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;        // A3, MIDI 57
+
+    struct Result {
+        dsp::Metrics metrics;
+        HarmonizerAudioProcessor::JazzView view;
+    };
+
+    // Holds one key for the whole render, and plays a steady tone into it.
+    const auto run = [&](bool jazzOn, bool ninths, int rangeLow, int rangeHigh,
+                         int keyNote, double seconds) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, jazzOn ? 1.0f : 0.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzNinth, ninths ? 1.0f : 0.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeLow,
+                 static_cast<float>(rangeLow));
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeHigh,
+                 static_cast<float>(rangeHigh));
+
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * seconds);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+
+            juce::MidiBuffer midi;
+            if (!sent) {
+                midi.addEvent(juce::MidiMessage::noteOn(1, keyNote, 0.8f), 0);
+                sent = true;
+            }
+            p.processBlock(buffer, midi);
+        }
+        return Result{p.metrics(), p.jazzView()};
+    };
+
+    // One key: C major. Playing A makes that the sixth degree, which this
+    // dictionary harmonises as vim7 -- an A minor seventh.
+    {
+        const auto r = run(true, false, 48, 84, 60, 1.5);
+        const auto& v = r.view;
+        char msg[260];
+        std::snprintf(msg, sizeof(msg),
+                      "C held, A3 played -> key centre %s, chord root %s%s, you are the %s",
+                      v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?",
+                      v.chordRootPc >= 0 ? jazz::pitchClassName(v.chordRootPc) : "?",
+                      v.roman, jazz::degreeName(v.melodyDegree));
+        check(v.enabled && v.sounding && v.keyCentrePc == 0 && !v.minorKey &&
+                  v.chordRootPc == 9 && v.melodyNote == 57,
+              msg);
+
+        std::snprintf(msg, sizeof(msg), "the engine is sounding the chord: %d voices for %d notes",
+                      r.metrics.activeVoices, v.noteCount);
+        check(v.noteCount >= 2 && r.metrics.activeVoices >= 2, msg);
+    }
+
+    // The same single key, without jazz mode, is one harmony note. That is the
+    // difference the mode makes.
+    {
+        const auto plain = run(false, false, 48, 84, 60, 1.0);
+        check(!plain.view.enabled && plain.view.noteCount == 0 &&
+                  plain.metrics.activeVoices == 1,
+              juce::String("with jazz mode off one key is one voice (") +
+                  juce::String(plain.metrics.activeVoices) + ")");
+    }
+
+    // Two keys name a minor key. A over an A minor centre is the tonic, im7.
+    {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) {
+                for (int note : {69, 76}) {         // A and the E above it
+                    midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.8f), 0);
+                }
+                sent = true;
+            }
+            p.processBlock(buffer, midi);
+        }
+        const auto v = p.jazzView();
+        check(v.sounding && v.minorKey && v.keyCentrePc == 9 && v.chordRootPc == 9 &&
+                  v.melodyDegree == 1,
+              juce::String("A and E held, A3 played -> A minor, chord ") + v.roman);
+    }
+
+    // The range is the plugin's promise about where the harmony sits.
+    {
+        const auto r = run(true, true, 60, 72, 60, 1.5);
+        bool inside = r.view.noteCount > 0;
+        for (int i = 0; i < r.view.noteCount; ++i) {
+            inside &= r.view.notes[i] >= 60 && r.view.notes[i] <= 72;
+        }
+        juce::String notes;
+        for (int i = 0; i < r.view.noteCount; ++i) notes += juce::String(r.view.notes[i]) + " ";
+        check(inside, juce::String("a C4-C5 range keeps every voice inside it: ") + notes);
+    }
+
+    // Switching the mode off mid-session hands the held key back to the engine
+    // rather than leaving it silent until the player lifts and presses again.
+    {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setChoice(p, HarmonizerAudioProcessor::ParamId::harmonyMode, 0);  // fixed interval
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.2);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+            if (pos > total / 2) {
+                setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 0.0f);
+            }
+            p.processBlock(buffer, midi);
+        }
+        const auto m = p.metrics();
+        check(m.activeVoices == 1 && !p.jazzView().sounding,
+              juce::String("leaving jazz mode with the key still down leaves one voice (") +
+                  juce::String(m.activeVoices) + ")");
+    }
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("=============================================\n");
@@ -416,6 +575,7 @@ int main() {
 
     testSidechainInput();
     testSilentMainBusDoesNotAttenuate();
+    testJazzChordMode();
 
     std::printf("\n=============================================\n");
     if (g_failures == 0) std::printf(" ALL PLUGIN CHECKS PASSED\n");

@@ -25,6 +25,22 @@ jobs:
         run: ./dsptest
 
   # ---------------------------------------------------------------------------
+  # The plugin's jazz chord mode is plain C++ with no JUCE in it, so its checks
+  # compile in one step rather than waiting on a full plugin build.
+  jazz-tests:
+    name: Jazz chord dictionary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the jazz voicer checks
+        run: |
+          clang++ -std=c++17 -O2 -Wall -Wextra \
+            -Iplugin/Source \
+            plugin/Tests/JazzHarness.cpp plugin/Source/JazzVoicer.cpp -o jazztest
+      - name: Run key centre, dictionary, range and voice-leading checks
+        run: ./jazztest
+
+  # ---------------------------------------------------------------------------
   # Builds the plugin on Linux purely to exercise the wrapper: parameter
   # mapping, host MIDI, channel summing, reported latency. The shipped macOS and
   # Windows builds cannot run headless tests in CI, so this is where wrapper
