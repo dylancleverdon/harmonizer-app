@@ -95,6 +95,14 @@ struct Params {
     std::atomic<float> outputGain{1.0f};
     std::atomic<int>   fftSize{1024};               // 256..2048, power of two
     std::atomic<bool>  bypass{false};
+
+    // How long a voice's gain takes to cross-fade when the note it is
+    // assigned to changes, on top of the ~15 ms floor that already exists to
+    // keep ordinary note starts and stops from clicking. 0 (the default)
+    // leaves that floor as the whole story, exactly today's behaviour; a
+    // caller that wants a deliberately smoother hand-off between chords (see
+    // jazz mode's Glide) raises it instead of fighting the floor.
+    std::atomic<float> glideMs{0.0f};
 };
 
 struct MidiEvent {

@@ -157,6 +157,10 @@ public:
         // major" mid-release. See jazzLatchActive_.
         static constexpr const char* jazzLatchKeys = "jazzLatchKeys";
 
+        // How long a chord change cross-fades instead of snapping -- see
+        // dsp::Params::glideMs. Only applied while jazz mode is on.
+        static constexpr const char* jazzGlideMs = "jazzGlideMs";
+
         // Custom chord dictionary: a user-built alternative to the dictionary
         // baked into JazzVoicer.cpp. Plugin only, and off by default -- with
         // it off, or with both context toggles below off, jazz mode is
@@ -310,6 +314,7 @@ private:
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};
     std::atomic<float>* pJazzTranspose_ = nullptr;
     std::atomic<float>* pJazzLatchKeys_ = nullptr;
+    std::atomic<float>* pJazzGlideMs_ = nullptr;
 
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;

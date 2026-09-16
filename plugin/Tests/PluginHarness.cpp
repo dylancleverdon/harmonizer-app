@@ -603,6 +603,62 @@ static void testJazzSustain() {
           "the pedal keeps the key centre alive even after every keyboard key is released");
 }
 
+// Glide stretches the cross-fade a chord change already gets rather than
+// adding a separate mechanism -- dsptest exercises the engine coefficient
+// itself directly; this just confirms the plugin actually wires jazz mode's
+// Glide parameter through to it.
+static void testJazzGlide() {
+    std::printf("\n-- Jazz glide --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    const auto blocksToSilence = [&](float glideMs) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, glideMs);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+
+        std::vector<float> zero(256, 0.0f);
+        juce::MidiBuffer offMidi;
+        offMidi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+        buffer.setSize(1, 256, false, false, true);
+        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), zero.data(), 256);
+        p.processBlock(buffer, offMidi);   // release the key -- jazz mode goes silent, engine fades
+
+        for (int i = 0; i < 2000; ++i) {
+            buffer.setSize(1, 256, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), zero.data(), 256);
+            juce::MidiBuffer midi;
+            p.processBlock(buffer, midi);
+            if (p.metrics().activeVoices <= 0) return i;
+        }
+        return 2000;
+    };
+
+    const int instant = blocksToSilence(0.0f);
+    const int glided = blocksToSilence(250.0f);
+    check(glided > instant * 2,
+          juce::String("glide makes the chord fade out meaningfully slower after the key "
+                       "releases (") +
+              juce::String(glided) + " vs " + juce::String(instant) + " blocks)");
+}
+
 // Auto harmony voices ignores the Chord Voices slider entirely and lets
 // through exactly as many notes as the chord naturally has -- extensions
 // included -- rather than the number picked ahead of time.
@@ -1003,6 +1059,7 @@ int main() {
     testJazzTranspose();
     testJazzLatch();
     testJazzSustain();
+    testJazzGlide();
     testJazzAutoVoices();
     testJazzCustomDictionary();
 

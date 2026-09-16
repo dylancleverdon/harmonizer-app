@@ -276,10 +276,13 @@ void Harmonizer::updateVoiceRatios() {
     mRoot_.store(rootNote, std::memory_order_relaxed);
     mAnchor_.store(anchorNote, std::memory_order_relaxed);
 
-    // ~15 ms gain slew: fast enough to feel immediate, slow enough that note
-    // starts and stops do not click.
-    const float coef = 1.0f - std::exp(-static_cast<float>(hop_) /
-                                       (0.015f * internalRate_));
+    // ~15 ms gain slew, or longer with glide: fast enough to feel immediate
+    // by default, slow enough that note starts and stops do not click, and
+    // stretched further when a caller wants chord changes to cross-fade
+    // rather than snap.
+    const float glideSeconds =
+        std::max(0.015f, params_.glideMs.load(std::memory_order_relaxed) * 0.001f);
+    const float coef = 1.0f - std::exp(-static_cast<float>(hop_) / (glideSeconds * internalRate_));
     int active = 0;
 
     for (auto& s : slots_) {

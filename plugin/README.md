@@ -142,6 +142,15 @@ extensions are switched on — rather than a number picked ahead of time.
 * **Voice leading** — at 0 % every chord is voiced in its own best register,
   wherever that leaves the last one. At 100 % the voicing that moves least from
   the chord before it wins, even where that means an odd register.
+* **Glide** — how long a chord change cross-fades between the tones leaving
+  and the tones arriving, instead of the engine's ordinary ~15 ms
+  click-avoidance fade. This is a cross-fade, not a pitch bend: a tone that
+  changes fades out at its old pitch while the new one fades in at its own,
+  rather than sweeping continuously between them. A tone common to both
+  chords is untouched either way, since it was already sustaining through
+  the change. Off (the default) leaves that ~15 ms floor as the whole story;
+  raising it trades a little immediacy for a smoother hand-off, worth it if
+  chord changes are landing on the ear too bluntly.
 
 ### Voicing style
 
@@ -257,6 +266,19 @@ is the thin JUCE-facing wrapper: it loads the file with `juce::MidiFile`,
 turns its matched note-on/note-off pairs into the tick-based note list the
 analysis wants, and writes the result into the same parameters the keyboard
 editor does.
+
+Transpose, latch and sustain live entirely in `PluginProcessor`'s
+`processBlock()`/`jazzUpdate()` -- held keys are read through
+`collectTransposedKeys()` everywhere rather than straight from the raw MIDI
+state, so latch capture and the live reading never disagree about what
+transpose did to them. Glide is the one piece that reaches into the shared
+engine: `dsp::Params::glideMs` (`app/src/main/cpp/dsp/Types.h`) controls the
+gain cross-fade time `Harmonizer::updateVoiceRatios()` already used at a
+fixed ~15 ms for ordinary click avoidance, and defaults to 0, which
+reproduces that fixed floor exactly -- the Android app, and every other
+harmony mode, never sets it and so never sees a behaviour change.
+`tools/dsptest` checks the coefficient directly; `PluginHarness.cpp` checks
+that jazz mode's Glide control actually reaches it.
 
 ## Updating
 

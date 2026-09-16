@@ -522,6 +522,18 @@ public:
                             "chord before it wins, even if that means an odd register.");
         leading.addRow(smoothNote_, 44);
 
+        glideLabel_.setText("GLIDE", look::muted);
+        leading.addRow(glideLabel_, 14);
+        styleSlider(glideSlider_);
+        leading.addRow(glideSlider_, 24);
+        glideNote_.setText(
+            "How long a chord change cross-fades between the tones leaving and the tones "
+            "arriving, instead of the engine's ordinary quick click-avoidance fade. Off is the "
+            "same snap it has always been; raising it trades a little immediacy for a smoother "
+            "hand-off between chords. A tone common to both chords is never touched by this -- it "
+            "was already sustaining through the change.");
+        leading.addRow(glideNote_, 58);
+
         // --- Styles.
         auto& styles = addCard("Voicing style");
         stylesNote_.setText("Choose as many as you like and the best of them for the moment is "
@@ -913,6 +925,7 @@ public:
         aVoicesAuto_ = std::make_unique<BA>(apvts, P::jazzVoicesAuto, voicesAuto_);
         aTranspose_ = std::make_unique<SA>(apvts, P::jazzTranspose, transposeSlider_);
         aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
+        aGlide_ = std::make_unique<SA>(apvts, P::jazzGlideMs, glideSlider_);
 
         aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
         aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
@@ -938,9 +951,13 @@ public:
                                 juce::String(static_cast<int>(v)) + " st";
             }
         };
+        glideSlider_.textFromValueFunction = [](double v) {
+            return v < 1.0 ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
+        };
         lowSlider_.updateText();
         highSlider_.updateText();
         transposeSlider_.updateText();
+        glideSlider_.updateText();
         smoothSlider_.updateText();
     }
 
@@ -1184,7 +1201,10 @@ private:
     juce::OwnedArray<juce::ToggleButton> styleToggles_;
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
-    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_;
+    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_,
+        glideSlider_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_;
+    look::Note glideLabel_, glideNote_;
     juce::ToggleButton voicesAuto_, latch_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_;

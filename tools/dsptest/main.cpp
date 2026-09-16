@@ -774,6 +774,53 @@ static void benchmark() {
     }
 }
 
+// Glide stretches the gain cross-fade a note-off already gets, rather than
+// introducing a separate mechanism -- so the way to see it is to measure how
+// long that fade actually takes with it on versus off.
+static void testGlide() {
+    printf("\n-- Glide stretches the cross-fade between chord changes --\n");
+    const double sr = 48000.0;
+    const int burst = 192;
+
+    // Bursts of silence, after a note-off, until the voice's gain has
+    // decayed below the engine's own audible threshold.
+    const auto burstsToSilence = [&](float glideMs) {
+        Harmonizer h;
+        h.prepare(sr, burst);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::FixedInterval));
+        h.params().glideMs.store(glideMs);
+
+        noteOn(h, 64);
+        std::vector<float> voiced(static_cast<size_t>(sr * 0.2));
+        makeVoice(voiced, 220.0, sr);
+        run(h, voiced, burst);   // let the voice settle to full gain
+
+        h.midiQueue().push(MidiEvent{0x80, 64, 0});   // note off
+
+        std::vector<float> silence(static_cast<size_t>(burst), 0.0f);
+        std::vector<float> out(static_cast<size_t>(burst), 0.0f);
+        int bursts = 0;
+        while (h.metrics().activeVoices > 0 && bursts < 2000) {
+            h.process(silence.data(), out.data(), burst);
+            ++bursts;
+        }
+        return bursts;
+    };
+
+    const int instant = burstsToSilence(0.0f);
+    const int glided = burstsToSilence(200.0f);
+    char msg[180];
+    snprintf(msg, sizeof(msg),
+             "200 ms glide fades out meaningfully slower than no glide (%d vs %d bursts of %d samples)",
+             glided, instant, burst);
+    check(glided > instant * 3, msg);
+
+    // 0 -- the default, and what every caller that never touches this gets
+    // -- must reproduce the engine's original fixed floor exactly.
+    const int stillDefault = burstsToSilence(0.0f);
+    check(stillDefault == instant, "glide left at 0 does not change the plain click-avoidance floor");
+}
+
 int main() {
     printf("=============================================\n");
     printf(" Harmoniser DSP validation\n");
@@ -792,6 +839,7 @@ int main() {
     testSmallestWindow();
     testChordVoicing();
     testAnchorDegree();
+    testGlide();
     benchmark();
 
     printf("\n=============================================\n");

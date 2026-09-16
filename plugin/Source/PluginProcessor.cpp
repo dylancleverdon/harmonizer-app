@@ -121,6 +121,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     }
     pJazzTranspose_ = apvts.getRawParameterValue(ParamId::jazzTranspose);
     pJazzLatchKeys_ = apvts.getRawParameterValue(ParamId::jazzLatchKeys);
+    pJazzGlideMs_ = apvts.getRawParameterValue(ParamId::jazzGlideMs);
 
     pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
     pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
@@ -277,6 +278,17 @@ HarmonizerAudioProcessor::createLayout() {
 
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzLatchKeys, 1}, "Latch Key Centre", false));
+
+    // How long a chord change cross-fades between the tones leaving and the
+    // tones arriving, instead of the ~15 ms floor that already exists just
+    // to keep note starts and stops from clicking. 0 leaves that floor as
+    // the whole story.
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{ParamId::jazzGlideMs, 1}, "Glide",
+        NormalisableRange<float>(0.0f, 400.0f, 1.0f), 0.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) {
+            return v < 1.0f ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
+        })));
 
     // --- Jazz custom chord dictionary ---------------------------------------
     // A user-built alternative to the dictionary above: pick the chord type
@@ -608,6 +620,10 @@ void HarmonizerAudioProcessor::pushParameters() {
     p.adaptiveVoiceScaling.store(pAdaptVoices_->load() > 0.5f);
     p.fftSize.store(pick(kFftSizes, pFftSize_->load()));
     p.bypass.store(pBypass_->load() > 0.5f);
+    // Glide is a jazz mode control -- the ordinary harmony modes keep the
+    // engine's plain click-avoidance floor rather than picking up whatever
+    // the jazz page's knob happens to be set to.
+    p.glideMs.store(pJazzMode_->load() > 0.5f ? pJazzGlideMs_->load() : 0.0f);
 }
 
 void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
