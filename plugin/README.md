@@ -142,15 +142,18 @@ extensions are switched on — rather than a number picked ahead of time.
 * **Voice leading** — at 0 % every chord is voiced in its own best register,
   wherever that leaves the last one. At 100 % the voicing that moves least from
   the chord before it wins, even where that means an odd register.
-* **Glide** — how long a chord change cross-fades between the tones leaving
-  and the tones arriving, instead of the engine's ordinary ~15 ms
-  click-avoidance fade. This is a cross-fade, not a pitch bend: a tone that
-  changes fades out at its old pitch while the new one fades in at its own,
-  rather than sweeping continuously between them. A tone common to both
-  chords is untouched either way, since it was already sustaining through
-  the change. Off (the default) leaves that ~15 ms floor as the whole story;
-  raising it trades a little immediacy for a smoother hand-off, worth it if
-  chord changes are landing on the ear too bluntly.
+* **Glide** — chord changes as pitch portamento instead of a retrigger. Each
+  voice in the old chord is matched to one in the new chord and slides to
+  it over however many milliseconds this is set to, rather than stopping
+  and restarting; a tone common to both is untouched either way, since it
+  was already sustaining through the change. When the chord's voice count
+  changes, nothing is ever just cut or invented from nothing: if it shrinks,
+  the voices that no longer have a tone of their own slide onto whichever
+  remaining tone is nearest, so a tone can end up doubled rather than a
+  voice dropping out silently; if it grows, one of the existing voices
+  splits in two, the new one starting from the same pitch as its source and
+  sliding away to the new tone it covers. Off (the default) is an ordinary
+  retrigger, exactly as if glide did not exist.
 
 ### Voicing style
 
@@ -272,13 +275,42 @@ Transpose, latch and sustain live entirely in `PluginProcessor`'s
 `collectTransposedKeys()` everywhere rather than straight from the raw MIDI
 state, so latch capture and the live reading never disagree about what
 transpose did to them. Glide is the one piece that reaches into the shared
-engine: `dsp::Params::glideMs` (`app/src/main/cpp/dsp/Types.h`) controls the
-gain cross-fade time `Harmonizer::updateVoiceRatios()` already used at a
-fixed ~15 ms for ordinary click avoidance, and defaults to 0, which
-reproduces that fixed floor exactly -- the Android app, and every other
-harmony mode, never sets it and so never sees a behaviour change.
-`tools/dsptest` checks the coefficient directly; `PluginHarness.cpp` checks
-that jazz mode's Glide control actually reaches it.
+engine, and the only place jazz mode's voice matching lives is
+`PluginProcessor::jazzApply()` -- the engine itself has no idea a "chord"
+exists, only individual voices.
+
+`Harmonizer` gains two methods alongside the ordinary MIDI note-on/off path:
+`retargetVoiceNote()` moves a sounding voice to a new note in place, gain and
+velocity untouched, so nothing retriggers; `spawnVoiceFromNote()` starts a
+new voice that begins audibly at another one's current pitch and slides away
+from there. Both are synchronous, direct calls (never through `midiQueue()`),
+safe because `jazzApply()` and `Harmonizer::process()` already run on the
+same audio thread in the same `processBlock()`. Each `Slot` gained a
+`targetHz` that slews toward its note's frequency every hop in Absolute mode
+-- at `dsp::Params::glideMs` (`app/src/main/cpp/dsp/Types.h`), or landing in
+one hop when that is 0, which is what an ordinary MIDI note-on always
+forces regardless of the setting, and what every caller that never touches
+it gets by default. The Android app, and every other harmony mode, never
+sets it and so never sees a behaviour change.
+
+`jazzApply()`'s own job is matching: a voice already sitting on a note the
+new chord wants is left alone outright (the same common-tone rule the
+no-glide path applies, just needed here too so an already-correct voice is
+never stolen from its tone by index-based pairing); what is left on each
+side pairs off by ascending index; and whichever side has more left over
+either converges (shrinking) or splits (growing), as above. Bookkeeping
+(`jazzVoiceNotes_`) tracks the true count of physically sounding voices, not
+the chord's own note count -- they diverge exactly when a shrink converges
+two voices onto one tone without releasing either, and the next chord change
+needs to know both are still there or it would spawn a redundant third
+rather than reusing them.
+
+`tools/dsptest` exercises `retargetVoiceNote()`/`spawnVoiceFromNote()`
+directly, by spectral measurement of where the pitch actually is at each
+point in the glide; `PluginHarness.cpp` exercises the matching algorithm
+itself -- converging, splitting, and reusing a previously-converged pair --
+through the full plugin, using a custom dictionary to pin exact voice
+counts.
 
 ## Updating
 

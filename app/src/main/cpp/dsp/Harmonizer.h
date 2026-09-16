@@ -35,6 +35,33 @@ public:
 
     void allNotesOff();
 
+    // --- direct voice control, for a caller that needs more than the MIDI
+    // note-on/off model can express: portamento between chord changes. Both
+    // are synchronous and slot-based rather than queued, so they are only
+    // safe called from the same thread that drives process() -- exactly
+    // like everything else in this class, and unlike midiQueue(), which
+    // exists precisely to be safe from a different one.
+    //
+    // Absolute mode is what makes gliding meaningful: its ratio is already
+    // recomputed every hop against the live input pitch, so retargeting a
+    // slot's note just changes what frequency that recomputation slews
+    // toward instead of snaps to. Both are no-ops outside Absolute mode.
+
+    /** Finds the voice currently sounding fromNote and reassigns it to
+     *  toNote in place -- gain and velocity untouched, so nothing retriggers
+     *  and nothing clicks. Its pitch slews toward the new note over
+     *  Params::glideMs instead of jumping. Returns false if fromNote was not
+     *  sounding. */
+    bool retargetVoiceNote(int fromNote, int toNote);
+
+    /** Starts a new voice at toNote that begins audibly at fromNote's
+     *  current pitch (if fromNote is sounding) and slews away from there,
+     *  the way retargetVoiceNote does -- "one voice splitting into two".
+     *  fromNote < 0, or not currently sounding, starts fresh at toNote
+     *  instead, gain fading in the ordinary way. Returns false only if no
+     *  voice slot was available at all. */
+    bool spawnVoiceFromNote(int fromNote, int toNote, float velocity);
+
 private:
     struct Slot {
         bool     held = false;
@@ -44,6 +71,14 @@ private:
         float    gain = 0.0f;
         float    gainTarget = 0.0f;
         uint64_t order = 0;
+
+        // Absolute mode's own idea of what frequency this voice is actually
+        // aimed at right now -- slews toward noteHz(note) every hop rather
+        // than snapping to it, at a rate Params::glideMs controls. Untouched
+        // by anything outside updateVoiceRatios() and the two direct-control
+        // methods above, which seed it so a retargeted or spawned voice
+        // starts gliding from the right place instead of from 0.
+        float targetHz = 0.0f;
     };
 
     void processChunk(const float* in, float* out, int frames);
@@ -55,6 +90,11 @@ private:
     void applyQualitySettings();
     void reconfigure(int baseFft, int decimation);
     void updateAdaptive(float load);
+
+    /** Slot already holding `note`, else a free slot, else the oldest held
+     *  one -- standard last-note-priority voice stealing. Always succeeds:
+     *  kMaxVoices is never zero. */
+    int allocateSlotForNote(int note);
 
     // --- configuration ------------------------------------------------------
     double hostSampleRate_ = 48000.0;

@@ -603,60 +603,91 @@ static void testJazzSustain() {
           "the pedal keeps the key centre alive even after every keyboard key is released");
 }
 
-// Glide stretches the cross-fade a chord change already gets rather than
-// adding a separate mechanism -- dsptest exercises the engine coefficient
-// itself directly; this just confirms the plugin actually wires jazz mode's
-// Glide parameter through to it.
+// Glide's voice matching (retarget in place, converge when the chord
+// shrinks, split when it grows) lives entirely in jazzApply() -- dsptest
+// covers the engine primitives it calls (retargetVoiceNote,
+// spawnVoiceFromNote) directly; this covers the matching algorithm end to
+// end through the full plugin, using a custom dictionary to pin the exact
+// voice count of each chord.
 static void testJazzGlide() {
     std::printf("\n-- Jazz glide --\n");
     const double sr = 48000.0;
-    const double f0 = 220.0;
 
-    const auto blocksToSilence = [&](float glideMs) {
-        HarmonizerAudioProcessor p;
-        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
-        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
-        setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, glideMs);
-        p.setPlayConfigDetails(1, 1, sr, 256);
-        p.prepareToPlay(sr, 256);
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 300.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoicesAuto, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
+    // Degree 0 (the root) gets a four-note voicing; degree 4 (the third)
+    // gets a two-note voicing -- switching between them changes the voice
+    // count, not just the pitches. Cleared first -- every degree starts out
+    // seeded with a built-in-equivalent voicing, not blank.
+    p.clearJazzCustomVoicing(false, 0);
+    p.clearJazzCustomVoicing(false, 4);
+    for (int offset : {4, 7, 11, 14}) p.setJazzCustomVoicingNote(false, 0, offset, true);
+    for (int offset : {3, 7}) p.setJazzCustomVoicingNote(false, 4, offset, true);
 
-        const int total = static_cast<int>(sr * 1.5);
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    const auto renderTone = [&](double f0, double seconds, const juce::MidiMessage* firstEvent) {
+        const int total = static_cast<int>(sr * seconds);
         std::vector<float> source(static_cast<size_t>(total));
         makeVoice(source, f0, sr);
-        juce::AudioBuffer<float> buffer(1, 256);
         bool sent = false;
         for (int pos = 0; pos < total; pos += 256) {
             const int n = juce::jmin(256, total - pos);
             buffer.setSize(1, n, false, false, true);
             juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
             juce::MidiBuffer midi;
-            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+            if (!sent && firstEvent != nullptr) { midi.addEvent(*firstEvent, 0); sent = true; }
             p.processBlock(buffer, midi);
         }
-
-        std::vector<float> zero(256, 0.0f);
-        juce::MidiBuffer offMidi;
-        offMidi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
-        buffer.setSize(1, 256, false, false, true);
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), zero.data(), 256);
-        p.processBlock(buffer, offMidi);   // release the key -- jazz mode goes silent, engine fades
-
-        for (int i = 0; i < 2000; ++i) {
-            buffer.setSize(1, 256, false, false, true);
-            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), zero.data(), 256);
-            juce::MidiBuffer midi;
-            p.processBlock(buffer, midi);
-            if (p.metrics().activeVoices <= 0) return i;
-        }
-        return 2000;
     };
 
-    const int instant = blocksToSilence(0.0f);
-    const int glided = blocksToSilence(250.0f);
-    check(glided > instant * 2,
-          juce::String("glide makes the chord fade out meaningfully slower after the key "
-                       "releases (") +
-              juce::String(glided) + " vs " + juce::String(instant) + " blocks)");
+    auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+    renderTone(261.63, 1.5, &keyOn);   // C held, sing C4 -- degree 0, the four-note chord
+    check(p.metrics().activeVoices == 4,
+          juce::String("the four-note custom voicing settles to 4 active voices (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // Switch to E4 -- degree 4, the two-note voicing. Glide is on, so the
+    // two excess voices converge onto the two remaining tones instead of
+    // being cut: nothing is released, so the voice count does not drop.
+    renderTone(329.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("with glide, shrinking to 2 voices converges rather than cutting -- "
+                       "still 4 active (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // Back to C4 -- degree 0, the four-note voicing again. The two
+    // converged pairs are reused as the retarget targets, so this still
+    // does not need to spawn anything new.
+    renderTone(261.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("back to 4 voices reuses the converged pair rather than doubling up "
+                       "further (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // With glide off, the same shrink is an ordinary note-off/note-on diff:
+    // the excess voices are actually released.
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 0.0f);
+    renderTone(329.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 2,
+          juce::String("without glide, shrinking to 2 voices actually releases the excess "
+                       "(got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // And growing back from there needs a genuine split, since there is no
+    // spare converged voice left over to reuse this time.
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 300.0f);
+    renderTone(261.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("growing from 2 voices to 4 splits to cover the new ones (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
 }
 
 // Auto harmony voices ignores the Chord Voices slider entirely and lets

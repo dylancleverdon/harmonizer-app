@@ -155,38 +155,49 @@ void Harmonizer::reconfigure(int baseFft, int decimation) {
     mInternalRate_.store(internalRate_, std::memory_order_relaxed);
 }
 
+namespace {
+inline float noteHzOf(int note) {
+    return 440.0f * std::exp2(static_cast<float>(note - 69) / 12.0f);
+}
+}  // namespace
+
+int Harmonizer::allocateSlotForNote(int note) {
+    // Reuse the slot already holding this note, else a free slot, else steal
+    // the oldest -- standard last-note-priority.
+    for (int i = 0; i < kMaxVoices; ++i) {
+        if (slots_[static_cast<size_t>(i)].held && slots_[static_cast<size_t>(i)].note == note) {
+            return i;
+        }
+    }
+    for (int i = 0; i < kMaxVoices; ++i) {
+        if (!slots_[static_cast<size_t>(i)].held) return i;
+    }
+    int slot = 0;
+    uint64_t oldest = UINT64_MAX;
+    for (int i = 0; i < kMaxVoices; ++i) {
+        if (slots_[static_cast<size_t>(i)].order < oldest) {
+            oldest = slots_[static_cast<size_t>(i)].order;
+            slot = i;
+        }
+    }
+    return slot;
+}
+
 void Harmonizer::drainMidi() {
     MidiEvent e;
     while (midi_.pop(e)) {
         const uint8_t cmd = e.status & 0xF0u;
         if (cmd == 0x90u && e.data2 > 0) {
-            // Note on: reuse the slot already holding this note, else a free
-            // slot, else steal the oldest -- standard last-note-priority.
-            int slot = -1;
-            for (int i = 0; i < kMaxVoices; ++i) {
-                if (slots_[static_cast<size_t>(i)].held &&
-                    slots_[static_cast<size_t>(i)].note == e.data1) { slot = i; break; }
-            }
-            if (slot < 0) {
-                for (int i = 0; i < kMaxVoices; ++i) {
-                    if (!slots_[static_cast<size_t>(i)].held) { slot = i; break; }
-                }
-            }
-            if (slot < 0) {
-                uint64_t oldest = UINT64_MAX;
-                for (int i = 0; i < kMaxVoices; ++i) {
-                    if (slots_[static_cast<size_t>(i)].order < oldest) {
-                        oldest = slots_[static_cast<size_t>(i)].order;
-                        slot = i;
-                    }
-                }
-            }
-            Slot& s = slots_[static_cast<size_t>(slot)];
+            Slot& s = slots_[static_cast<size_t>(allocateSlotForNote(e.data1))];
             s.held = true;
             s.note = e.data1;
             s.velocity = static_cast<float>(e.data2) / 127.0f;
             s.gainTarget = s.velocity;
             s.order = ++noteCounter_;
+            // An ordinary MIDI note-on always lands right on pitch -- only
+            // the two direct-control methods below ever leave targetHz
+            // behind on purpose, to glide.
+            s.targetHz = noteHzOf(e.data1);
         } else if (cmd == 0x80u || (cmd == 0x90u && e.data2 == 0)) {
             for (auto& s : slots_) {
                 if (s.held && s.note == e.data1) { s.held = false; s.gainTarget = 0.0f; }
@@ -195,6 +206,38 @@ void Harmonizer::drainMidi() {
             allNotesOff();
         }
     }
+}
+
+bool Harmonizer::retargetVoiceNote(int fromNote, int toNote) {
+    for (auto& s : slots_) {
+        if (s.held && s.note == fromNote) {
+            s.note = toNote;   // targetHz deliberately left alone -- that's the glide
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Harmonizer::spawnVoiceFromNote(int fromNote, int toNote, float velocity) {
+    float sourceHz = -1.0f;
+    if (fromNote >= 0) {
+        for (const auto& s : slots_) {
+            if (s.held && s.note == fromNote) { sourceHz = s.targetHz; break; }
+        }
+    }
+
+    Slot& s = slots_[static_cast<size_t>(allocateSlotForNote(toNote))];
+    s.held = true;
+    s.note = toNote;
+    s.velocity = clampf(velocity, 0.0f, 1.0f);
+    s.gainTarget = s.velocity;
+    s.order = ++noteCounter_;
+    // Found a voice to split from: start audibly at its current pitch and
+    // let updateVoiceRatios() glide away from there. Otherwise this is an
+    // ordinary fresh voice with nothing to glide from -- land on pitch
+    // immediately, same as a plain note-on; only its gain fades in.
+    s.targetHz = sourceHz > 0.0f ? sourceHz : noteHzOf(toNote);
+    return true;
 }
 
 namespace {
@@ -276,17 +319,26 @@ void Harmonizer::updateVoiceRatios() {
     mRoot_.store(rootNote, std::memory_order_relaxed);
     mAnchor_.store(anchorNote, std::memory_order_relaxed);
 
-    // ~15 ms gain slew, or longer with glide: fast enough to feel immediate
-    // by default, slow enough that note starts and stops do not click, and
-    // stretched further when a caller wants chord changes to cross-fade
-    // rather than snap.
-    const float glideSeconds =
-        std::max(0.015f, params_.glideMs.load(std::memory_order_relaxed) * 0.001f);
-    const float coef = 1.0f - std::exp(-static_cast<float>(hop_) / (glideSeconds * internalRate_));
+    // ~15 ms gain slew: fast enough to feel immediate, slow enough that note
+    // starts and stops do not click. Glide (below) is a separate thing --
+    // it stretches how long a voice's *pitch* takes to arrive at a
+    // retargeted note, not how long its gain takes to fade in or out.
+    const float coef = 1.0f - std::exp(-static_cast<float>(hop_) / (0.015f * internalRate_));
+
+    // How long a slot's targetHz takes to arrive at a new note once
+    // retargetVoiceNote()/spawnVoiceFromNote() has moved it -- see
+    // Params::glideMs. 0 (the default, and what an ordinary MIDI note-on
+    // always gets regardless of this setting) means "land immediately",
+    // exactly as if glide did not exist.
+    const float glideMs = params_.glideMs.load(std::memory_order_relaxed);
+    const float pitchCoef = glideMs > 0.0f
+        ? 1.0f - std::exp(-static_cast<float>(hop_) / (glideMs * 0.001f * internalRate_))
+        : 1.0f;
+
     int active = 0;
 
     for (auto& s : slots_) {
-        if (!s.held && s.gain < 1e-4f) { s.gain = 0.0f; s.note = -1; continue; }
+        if (!s.held && s.gain < 1e-4f) { s.gain = 0.0f; s.note = -1; s.targetHz = 0.0f; continue; }
 
         // Ratios are recomputed only while the key is down. A voice that is
         // releasing keeps the ratio it was sounding at, so letting go of the
@@ -301,9 +353,17 @@ void Harmonizer::updateVoiceRatios() {
 
                 case HarmonyMode::Absolute:
                     if (f0 > 20.0f) {
-                        const float target =
-                            440.0f * std::exp2(static_cast<float>(s.note - 69) / 12.0f);
-                        s.ratio = clampf(target / f0, 0.25f, 4.0f);
+                        // targetHz slews toward the note's frequency rather
+                        // than snapping to it -- ordinarily arriving within
+                        // one hop (pitchCoef == 1), but over Params::glideMs
+                        // when a caller has deliberately left it behind by
+                        // retargeting or spawning a voice without resetting
+                        // it. Everything else about Absolute mode -- ratio
+                        // tracking the live input pitch every hop -- is
+                        // unchanged.
+                        const float noteHz = noteHzOf(s.note);
+                        s.targetHz += (noteHz - s.targetHz) * pitchCoef;
+                        s.ratio = clampf(s.targetHz / f0, 0.25f, 4.0f);
                     }
                     // With no confident pitch the last ratio is held rather
                     // than snapping to unison mid-phrase.

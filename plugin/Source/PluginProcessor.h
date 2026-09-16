@@ -360,7 +360,13 @@ private:
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as
     bool hostKeyDown_[128] = {};             // keys the host is holding
-    bool jazzSounding_[128] = {};            // notes we are holding up ourselves
+
+    // The notes we are currently holding up ourselves, ascending, as jazzApply()
+    // last set them -- not a per-note flag, because glide's voice convergence
+    // can legitimately leave two different voices sounding the same note
+    // (each its own engine slot), which a 128-entry bool array can't represent.
+    int jazzVoiceNotes_[jazz::kMaxVoicingNotes] = {};
+    int jazzVoiceCount_ = 0;
     int  jazzKeyVelocity_ = 100;
     int  jazzDecisionCountdown_ = 0;         // samples until the next decision
     int  jazzCandidateNote_ = -1;

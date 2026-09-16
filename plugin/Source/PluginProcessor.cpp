@@ -566,7 +566,7 @@ void HarmonizerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     monoIn_.clear();
     monoOut_.clear();
 
-    for (bool& note : jazzSounding_) note = false;
+    jazzVoiceCount_ = 0;
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
     jazzCandidateTicks_ = 0;
@@ -787,7 +787,7 @@ void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
     // Whichever direction this is going, the engine is holding notes that mean
     // something different on the other side of the switch.
     engine_.allNotesOff();
-    for (bool& n : jazzSounding_) n = false;
+    jazzVoiceCount_ = 0;
 
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
@@ -818,15 +818,16 @@ void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
 }
 
 void HarmonizerAudioProcessor::jazzSilence() {
-    for (int note = 0; note < 128; ++note) {
-        if (!jazzSounding_[note]) continue;
+    for (int i = 0; i < jazzVoiceCount_; ++i) {
+        const int note = jazzVoiceNotes_[i];
+        if (note < 0 || note > 127) continue;
         dsp::MidiEvent event;
         event.status = 0x80;
         event.data1 = static_cast<uint8_t>(note);
         event.data2 = 0;
         engine_.midiQueue().push(event);
-        jazzSounding_[note] = false;
     }
+    jazzVoiceCount_ = 0;
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
     jazzCandidateTicks_ = 0;
@@ -836,23 +837,121 @@ void HarmonizerAudioProcessor::jazzSilence() {
 }
 
 void HarmonizerAudioProcessor::jazzApply(const jazz::Voicing& voicing) {
-    bool wanted[128] = {};
-    for (int i = 0; i < voicing.count; ++i) {
-        const int note = voicing.notes[i];
-        if (note >= 0 && note < 128) wanted[note] = true;
+    const int newCount = juce::jlimit(0, jazz::kMaxVoicingNotes, voicing.count);
+    const float glideMs = pJazzGlideMs_->load();
+
+    // No glide, or nothing was sounding to glide from (the first chord of a
+    // phrase): the ordinary note-off/note-on diff. A tone common to both
+    // chords is left alone rather than retriggered, which is what makes a
+    // held common tone actually sustain through the change.
+    if (glideMs <= 0.0f || jazzVoiceCount_ == 0) {
+        bool wanted[128] = {};
+        for (int i = 0; i < newCount; ++i) {
+            const int note = voicing.notes[i];
+            if (note >= 0 && note < 128) wanted[note] = true;
+        }
+        bool currentlyOn[128] = {};
+        for (int i = 0; i < jazzVoiceCount_; ++i) {
+            const int note = jazzVoiceNotes_[i];
+            if (note >= 0 && note < 128) currentlyOn[note] = true;
+        }
+        for (int note = 0; note < 128; ++note) {
+            if (currentlyOn[note] == wanted[note]) continue;
+            dsp::MidiEvent event;
+            event.status = wanted[note] ? 0x90 : 0x80;
+            event.data1 = static_cast<uint8_t>(note);
+            event.data2 = wanted[note] ? static_cast<uint8_t>(jazzKeyVelocity_) : 0;
+            engine_.midiQueue().push(event);
+        }
+    } else {
+        // Glide: match each previously-sounding voice to a new one and
+        // retarget it in place instead of stopping and restarting -- the
+        // engine slews the pitch across the glide time rather than
+        // snapping.
+        const int oldCount = jazzVoiceCount_;
+        int oldNow[jazz::kMaxVoicingNotes];
+        bool oldMatched[jazz::kMaxVoicingNotes] = {};
+        for (int i = 0; i < oldCount; ++i) oldNow[i] = jazzVoiceNotes_[i];
+
+        // A voice already sitting on a note the new chord wants is left
+        // exactly alone, first, regardless of where either falls in its own
+        // list -- the same common-tone rule the no-glide path applies,
+        // needed here too so an already-correct voice never gets stolen
+        // away from its tone just because ascending-index pairing below
+        // would otherwise have matched it to something else.
+        bool newMatched[jazz::kMaxVoicingNotes] = {};
+        for (int i = 0; i < oldCount; ++i) {
+            for (int j = 0; j < newCount; ++j) {
+                if (newMatched[j]) continue;
+                if (oldNow[i] == voicing.notes[j]) {
+                    oldMatched[i] = true;
+                    newMatched[j] = true;
+                    break;
+                }
+            }
+        }
+
+        // What is left on each side, in order, is what actually needs to
+        // move. Both are still ascending, so pairing them by index is
+        // still pairing each with its nearest remaining neighbour.
+        int remOld[jazz::kMaxVoicingNotes]; int remOldCount = 0;
+        for (int i = 0; i < oldCount; ++i) if (!oldMatched[i]) remOld[remOldCount++] = oldNow[i];
+        int remNew[jazz::kMaxVoicingNotes]; int remNewCount = 0;
+        for (int j = 0; j < newCount; ++j) if (!newMatched[j]) remNew[remNewCount++] = voicing.notes[j];
+
+        const int paired = juce::jmin(remOldCount, remNewCount);
+        for (int i = 0; i < paired; ++i) {
+            if (remOld[i] != remNew[i]) engine_.retargetVoiceNote(remOld[i], remNew[i]);
+            remOld[i] = remNew[i];
+        }
+
+        if (remOldCount > remNewCount) {
+            // Excess voices have no partner of their own -- each glides to
+            // whichever remaining tone is nearest, even if that means two
+            // converge on the same one, rather than being cut. Both are
+            // still genuinely sounding afterwards -- retargeting never
+            // releases a voice -- so bookkeeping keeps tracking all oldCount
+            // of the original voices (matched ones unchanged, the rest as
+            // their now-converged notes), not just newCount: otherwise the
+            // next chord change would have no idea the extra, still-active
+            // voice exists and would spawn a redundant one on top of it.
+            for (int i = paired; i < remOldCount; ++i) {
+                // Nearest among every new tone, not just the unmatched ones
+                // -- converging onto one that another voice already matched
+                // is perfectly fine, and newCount is always at least 1 here.
+                int nearest = voicing.notes[0];
+                int nearestDist = std::abs(remOld[i] - nearest);
+                for (int j = 1; j < newCount; ++j) {
+                    const int d = std::abs(remOld[i] - voicing.notes[j]);
+                    if (d < nearestDist) { nearest = voicing.notes[j]; nearestDist = d; }
+                }
+                if (remOld[i] != nearest) engine_.retargetVoiceNote(remOld[i], nearest);
+                remOld[i] = nearest;
+            }
+            jazzVoiceCount_ = oldCount;
+            int idx = 0;
+            for (int i = 0; i < oldCount; ++i) {
+                jazzVoiceNotes_[i] = oldMatched[i] ? oldNow[i] : remOld[idx++];
+            }
+            return;
+        } else if (remNewCount > remOldCount) {
+            // Extra tones have no existing voice of their own -- one splits
+            // off from whichever voice (matched or not) is nearest.
+            for (int i = paired; i < remNewCount; ++i) {
+                const int to = remNew[i];
+                int source = oldCount > 0 ? oldNow[0] : -1;
+                int sourceDist = oldCount > 0 ? std::abs(oldNow[0] - to) : 0;
+                for (int j = 1; j < oldCount; ++j) {
+                    const int d = std::abs(oldNow[j] - to);
+                    if (d < sourceDist) { sourceDist = d; source = oldNow[j]; }
+                }
+                engine_.spawnVoiceFromNote(source, to, static_cast<float>(jazzKeyVelocity_) / 127.0f);
+            }
+        }
     }
 
-    // Notes common to both chords are left alone rather than retriggered, which
-    // is what makes a held common tone actually sustain through a change.
-    for (int note = 0; note < 128; ++note) {
-        if (jazzSounding_[note] == wanted[note]) continue;
-        dsp::MidiEvent event;
-        event.status = wanted[note] ? 0x90 : 0x80;
-        event.data1 = static_cast<uint8_t>(note);
-        event.data2 = wanted[note] ? static_cast<uint8_t>(jazzKeyVelocity_) : 0;
-        engine_.midiQueue().push(event);
-        jazzSounding_[note] = wanted[note];
-    }
+    jazzVoiceCount_ = newCount;
+    for (int i = 0; i < newCount; ++i) jazzVoiceNotes_[i] = voicing.notes[i];
 }
 
 void HarmonizerAudioProcessor::jazzPublish(const jazz::Voicing& v, float melodyHz,
@@ -886,7 +985,7 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         1, static_cast<int>(getSampleRate() * kJazzDecisionSeconds));
 
     if (jazzPanic_.exchange(false)) {
-        for (bool& note : jazzSounding_) note = false;
+        jazzVoiceCount_ = 0;
         jazzInputHash_ = 0;
         jazzCandidateTicks_ = 0;
     }
