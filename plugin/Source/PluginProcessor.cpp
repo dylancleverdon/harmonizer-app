@@ -120,6 +120,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
         pJazzStyle_[i] = apvts.getRawParameterValue(ParamId::jazzStyle[i]);
     }
     pJazzTranspose_ = apvts.getRawParameterValue(ParamId::jazzTranspose);
+    pJazzTransposeAudioIn_ = apvts.getRawParameterValue(ParamId::jazzTransposeAudioIn);
     pJazzLatchKeys_ = apvts.getRawParameterValue(ParamId::jazzLatchKeys);
     pJazzGlideMs_ = apvts.getRawParameterValue(ParamId::jazzGlideMs);
 
@@ -259,9 +260,14 @@ HarmonizerAudioProcessor::createLayout() {
             "Voicing: " + kJazzStyleNames[i], false));
     }
 
-    // Semitones added to every held key before it names a key centre -- for
-    // a player who thinks in a transposing instrument's written pitch. Zero
-    // (concert pitch) changes nothing; common transpositions are labelled.
+    // Display-only, both of them -- never reaches the engine, never shifts a
+    // single Hz of real audio or a single held MIDI note used for the actual
+    // chord. Each just renames what one input reads as, for a player who
+    // thinks in a transposing instrument's written pitch: held keys get their
+    // own control, the live audio input gets a separate one, so a Bb trumpet
+    // and a concert-pitch keyboard can each be labelled correctly and still
+    // read the same letter for the same underlying pitch. Zero (concert
+    // pitch) changes nothing; common transpositions are labelled.
     const auto asTransposition = AudioParameterIntAttributes().withStringFromValueFunction(
         [](int v, int) {
             switch (v) {
@@ -274,7 +280,10 @@ HarmonizerAudioProcessor::createLayout() {
             }
         });
     layout.add(std::make_unique<AudioParameterInt>(
-        ParameterID{ParamId::jazzTranspose, 1}, "Transpose", -12, 12, 0, asTransposition));
+        ParameterID{ParamId::jazzTranspose, 1}, "Keys Transpose", -12, 12, 0, asTransposition));
+    layout.add(std::make_unique<AudioParameterInt>(
+        ParameterID{ParamId::jazzTransposeAudioIn, 1}, "Audio In Transpose", -12, 12, 0,
+        asTransposition));
 
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzLatchKeys, 1}, "Latch Key Centre", false));
@@ -761,8 +770,12 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 // nothing, and talks to the engine through the same MIDI queue a keyboard would.
 // ---------------------------------------------------------------------------
 
-int HarmonizerAudioProcessor::transposeSemitones() const {
+int HarmonizerAudioProcessor::keyTransposeSemitones() const {
     return static_cast<int>(std::lround(pJazzTranspose_->load()));
+}
+
+int HarmonizerAudioProcessor::melodyTransposeSemitones() const {
+    return static_cast<int>(std::lround(pJazzTransposeAudioIn_->load()));
 }
 
 int HarmonizerAudioProcessor::collectKeys(int* keys, int maxKeys) const {
@@ -1143,7 +1156,8 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.rangeLimited = jvLimited_.load();
     v.windowLow = jvWindowLow_.load();
     v.windowHigh = jvWindowHigh_.load();
-    v.transposeSemitones = transposeSemitones();
+    v.keyTransposeSemitones = keyTransposeSemitones();
+    v.melodyTransposeSemitones = melodyTransposeSemitones();
     return v;
 }
 

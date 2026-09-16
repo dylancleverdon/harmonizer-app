@@ -422,16 +422,25 @@ public:
                        "around your note.");
         mode.addRow(intro_, 58);
 
-        transposeLabel_.setText("TRANSPOSE", look::muted);
+        transposeLabel_.setText("KEYS TRANSPOSE", look::muted);
         mode.addRow(transposeLabel_, 14);
         styleSlider(transposeSlider_);
         mode.addRow(transposeSlider_, 24);
         transposeNote_.setText(
             "Display only -- never touches the chord or how it sounds. Renames the key centre "
-            "and the note you're playing the way your instrument's part would read them, so a "
-            "concert Bb reads as the same letter whether it came from a held key or the live "
-            "input. Set this to your instrument's transposition.");
+            "your held keys are naming, the way your instrument's part would read it. Set this "
+            "to your instrument's transposition.");
         mode.addRow(transposeNote_, 30);
+
+        transposeAudioLabel_.setText("AUDIO IN TRANSPOSE", look::muted);
+        mode.addRow(transposeAudioLabel_, 14);
+        styleSlider(transposeAudioSlider_);
+        mode.addRow(transposeAudioSlider_, 24);
+        transposeAudioNote_.setText(
+            "Display only, and separate from the control above -- renames the note you're "
+            "playing live, so a concert Bb into the input reads as the same letter your keys "
+            "would read for the same pitch. Set this to the live instrument's transposition.");
+        mode.addRow(transposeAudioNote_, 30);
 
         styleToggle(latch_, "Latch key centre");
         mode.addRow(latch_, 24);
@@ -925,6 +934,7 @@ public:
         aVoices_ = std::make_unique<SA>(apvts, P::jazzVoices, voicesSlider_);
         aVoicesAuto_ = std::make_unique<BA>(apvts, P::jazzVoicesAuto, voicesAuto_);
         aTranspose_ = std::make_unique<SA>(apvts, P::jazzTranspose, transposeSlider_);
+        aTransposeAudio_ = std::make_unique<SA>(apvts, P::jazzTransposeAudioIn, transposeAudioSlider_);
         aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
         aGlide_ = std::make_unique<SA>(apvts, P::jazzGlideMs, glideSlider_);
 
@@ -952,12 +962,14 @@ public:
                                 juce::String(static_cast<int>(v)) + " st";
             }
         };
+        transposeAudioSlider_.textFromValueFunction = transposeSlider_.textFromValueFunction;
         glideSlider_.textFromValueFunction = [](double v) {
             return v < 1.0 ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
         };
         lowSlider_.updateText();
         highSlider_.updateText();
         transposeSlider_.updateText();
+        transposeAudioSlider_.updateText();
         glideSlider_.updateText();
         smoothSlider_.updateText();
     }
@@ -972,13 +984,15 @@ public:
 
         // Transpose never reaches the engine -- keyCentrePc, melodyNote and
         // everything else on view is real concert pitch. It only renames
-        // what gets printed here, so a transposing player reads the same
-        // letter off a held key and off the live input. The slider's own
-        // convention (-2 = "Bb", +3 = "Eb", +5 = "F") is concert = written +
-        // transpose, so going the other way to print the written name is
-        // written = concert - transpose.
-        const int transpose = view.transposeSemitones;
-        const int displayKeyPc = ((view.keyCentrePc - transpose) % 12 + 12) % 12;
+        // what gets printed here, each row from its own control, so a
+        // transposing player reads the same letter off a held key and off
+        // the live input even when those two need different transpositions.
+        // The sliders' own convention (-2 = "Bb", +3 = "Eb", +5 = "F") is
+        // concert = written + transpose, so going the other way to print the
+        // written name is written = concert - transpose.
+        const int keyTranspose = view.keyTransposeSemitones;
+        const int melodyTranspose = view.melodyTransposeSemitones;
+        const int displayKeyPc = ((view.keyCentrePc - keyTranspose) % 12 + 12) % 12;
 
         if (view.keyCentrePc >= 0 && (view.heldKeys > 0 || view.keyLatched)) {
             juce::String tag;
@@ -992,9 +1006,10 @@ public:
         }
 
         if (view.melodyNote >= 0 && view.melodyHz > 0.0f) {
-            playingRow_->setValue(flatNoteName(juce::jlimit(0, 127, view.melodyNote - transpose)) +
-                                  "  " + juce::String(juce::roundToInt(view.melodyHz)) +
-                                  " Hz  -  the " + jazz::degreeName(view.melodyDegree));
+            playingRow_->setValue(
+                flatNoteName(juce::jlimit(0, 127, view.melodyNote - melodyTranspose)) + "  " +
+                juce::String(juce::roundToInt(view.melodyHz)) + " Hz  -  the " +
+                jazz::degreeName(view.melodyDegree));
         } else {
             playingRow_->setValue("no pitch yet");
         }
@@ -1213,18 +1228,20 @@ private:
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
     juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_,
-        glideSlider_;
+        transposeAudioSlider_, glideSlider_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_;
     look::Note glideLabel_, glideNote_;
     juce::ToggleButton voicesAuto_, latch_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_,
+        aTransposeAudio_;
     std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
     std::unique_ptr<look::StatRow> keyRow_, playingRow_, chordRow_, voicingRow_, rangeRow_,
         smoothRow_;
     look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
         inversionLabel_, shiftNote_, rangeLabel_, rangeNote_, smoothNote_, stylesNote_,
-        shuffleNote_, doubleNote_, transposeLabel_, transposeNote_, latchNote_;
+        shuffleNote_, doubleNote_, transposeLabel_, transposeNote_, transposeAudioLabel_,
+        transposeAudioNote_, latchNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aEnable_, aNinth_,
         aEleventh_, aThirteenth_, aShuffle_, aDouble_;
