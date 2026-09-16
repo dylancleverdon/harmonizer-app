@@ -177,6 +177,20 @@ on disk and you restart your DAW to pick it up. On Windows the loaded binary
 cannot be deleted, but it *can* be renamed, which is what makes replacing it
 while it runs possible; the leftover is swept up next time the plugin loads.
 
+### Version history
+
+Every build gets its own permanent release — nothing is ever deleted the way
+`latest` is — so if an update causes a problem, the **Version history** panel
+next to **Updates** can put a past build back. Press **Load version history**,
+pick a version from the list, and **Install this version** runs through the
+exact same download/verify/install pipeline an ordinary update does, just
+pointed at that build instead of the newest one. It is not a separate,
+smaller install: the AU and VST3 are replaced together either way, and you
+restart your DAW afterwards the same as any other update. `PluginUpdater`
+tracks which of its background jobs is running, so a check, an install, a
+history load and a rollback all share one worker and one status line rather
+than racing each other.
+
 ## Building it yourself
 
     cmake -B build -S plugin -DCMAKE_BUILD_TYPE=Release

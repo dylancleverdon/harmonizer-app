@@ -933,6 +933,40 @@ public:
         installButton_.onClick = [this] { updater_.downloadAndInstall(); };
         installButton_.setVisible(false);
 
+        // --- Version history: every build stays available on its own release,
+        // so an update that turns out to break something can be undone.
+        auto& history = addCard("Version history");
+        historyNote_.setText("Every build stays available, so an update that causes a problem "
+                             "can be undone. Load the list, pick a version, and it installs the "
+                             "same way an update does.");
+        history.addRow(historyNote_, 44);
+        history.addRow(loadHistoryRow_, 30);
+        loadHistoryRow_.addAndMakeVisible(loadHistoryButton_);
+        loadHistoryRow_.onResize = [this] {
+            loadHistoryButton_.setBounds(0, 0, 190, loadHistoryRow_.getHeight());
+        };
+        loadHistoryButton_.onClick = [this] { updater_.loadVersionHistory(); };
+
+        historyStatus_.setText("Not loaded yet.");
+        history.addRow(historyStatus_, 18);
+
+        history.addRow(rollBackRow_, 28);
+        styleCombo(historyCombo_);
+        rollBackRow_.addAndMakeVisible(historyCombo_);
+        rollBackRow_.addAndMakeVisible(rollBackButton_);
+        rollBackRow_.onResize = [this] {
+            rollBackButton_.setBounds(rollBackRow_.getWidth() - 150, 0, 150,
+                                      rollBackRow_.getHeight());
+            historyCombo_.setBounds(0, 0, rollBackRow_.getWidth() - 158, rollBackRow_.getHeight());
+        };
+        rollBackButton_.setButtonText("Install this version");
+        rollBackButton_.setEnabled(false);
+        rollBackButton_.onClick = [this] {
+            const int index = historyCombo_.getSelectedItemIndex();
+            if (index < 0 || index >= historyTags_.size()) return;
+            updater_.installVersion(historyTags_[index]);
+        };
+
         using SA = juce::AudioProcessorValueTreeState::SliderAttachment;
         using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
         aAmount_ = std::make_unique<SA>(apvts, P::qualityAmount, amountSlider_);
@@ -1040,13 +1074,46 @@ private:
                 text = s.message; break;
         }
         updateNote_.setText(text, colour);
+
+        // Version history rides the same background worker and busy flag as
+        // the ordinary update flow above -- only one job runs at a time, and a
+        // rollback in progress shows through updateNote_ exactly like a normal
+        // install does, since both write the same Status fields.
+        loadHistoryButton_.setEnabled(!busy);
+
+        if (!s.historyLoaded) {
+            historyStatus_.setText("Not loaded yet.", look::muted);
+        } else if (s.historyError.isNotEmpty()) {
+            historyStatus_.setText(s.historyError, look::warn);
+        } else if (s.history.isEmpty()) {
+            historyStatus_.setText("No past versions found.", look::muted);
+        } else {
+            historyStatus_.setText(juce::String(s.history.size()) + " version(s) available.",
+                                   look::muted);
+        }
+
+        // Repopulate only when the set actually changed, so a selection made
+        // mid-browse is not reset by every refresh at 12 Hz.
+        if (s.history.size() != historyTags_.size()) {
+            historyCombo_.clear(juce::dontSendNotification);
+            historyTags_.clear();
+            for (int i = 0; i < s.history.size(); ++i) {
+                const auto& v = s.history.getReference(i);
+                juce::String label = v.versionName;
+                if (v.versionCode == PluginUpdater::currentVersionCode()) label += "  (installed)";
+                historyCombo_.addItem(label, i + 1);
+                historyTags_.add(v.tag);
+            }
+        }
+        rollBackButton_.setEnabled(!busy && !historyTags_.isEmpty());
     }
 
     HarmonizerAudioProcessor& processor_;
     PluginUpdater& updater_;
 
     look::Note qualityIntro_, qualityNote_, adaptiveNote_, adaptLatencyNote_, adaptVoicesNote_,
-        formantNote_, windowNote_, bypassNote_, updateNote_, windowLabel_, outputLabel_;
+        formantNote_, windowNote_, bypassNote_, updateNote_, windowLabel_, outputLabel_,
+        historyNote_, historyStatus_;
     std::unique_ptr<look::StatRow> runningRow_, amountRow_, effectiveRow_, installedRow_;
     std::unique_ptr<ChipGroup> qualityChips_, windowChips_;
     juce::Slider amountSlider_, gainSlider_;
@@ -1056,6 +1123,11 @@ private:
     juce::TextButton checkButton_{"Check for updates"}, installButton_{"Download and install"};
     double updateProgress_ = 0.0;
     juce::ProgressBar updateBar_{updateProgress_};
+
+    Holder loadHistoryRow_, rollBackRow_;
+    juce::TextButton loadHistoryButton_{"Load version history"}, rollBackButton_;
+    juce::ComboBox historyCombo_;
+    juce::StringArray historyTags_;   // parallel to historyCombo_'s items
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aAmount_, aGain_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aFormant_,

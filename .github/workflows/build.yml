@@ -304,10 +304,77 @@ jobs:
           print(open("out/plugin-version.json").read())
           PY
 
+      - name: Fetch the version history published so far
+        # "latest" is the only release this workflow ever deletes, so the
+        # cumulative history has to be read back from it before that happens,
+        # or each run would silently forget every build before it.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev
+          gh release download latest --repo "$GITHUB_REPOSITORY" \
+            --pattern versions.json --dir prev --clobber || true
+
+      - name: Build the version history
+        # Every build gets its own permanent release below, and this is the
+        # index of them the plugin's "Version history" panel reads -- append
+        # this run rather than replace, so it is the one place none of that
+        # rolling-release behaviour applies to.
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+
+          run = int(os.environ["GITHUB_RUN_NUMBER"])
+          notes = json.load(open("out/plugin-version.json"))["notes"]
+
+          path = "prev/versions.json"
+          history = json.load(open(path)) if os.path.exists(path) else []
+          if not isinstance(history, list):
+              history = []
+
+          by_code = {int(e["versionCode"]): e for e in history if "versionCode" in e}
+          by_code[run] = {
+              "versionCode": run,
+              "versionName": f"1.0.{run}",
+              "tag": f"v1.0.{run}",
+              "notes": notes,
+              "publishedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+
+          ordered = sorted(by_code.values(), key=lambda e: e["versionCode"], reverse=True)
+          with open("out/versions.json", "w") as f:
+              json.dump(ordered, f, indent=2)
+          print(open("out/versions.json").read())
+          PY
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-payload
           path: out/*
+
+      - name: Publish this build's own permanent release
+        # Never deleted or recreated by a later run, unlike "latest" below --
+        # this is what makes rolling back to an older build possible at all.
+        # Same assets as "latest", so the plugin's rollback path can use the
+        # exact download/verify pipeline an ordinary update does.
+        #
+        # A re-run of this exact workflow run reuses GITHUB_RUN_NUMBER, so the
+        # tag can already exist -- delete just that one and recreate it rather
+        # than fail, which is the same tolerance "latest" already has below.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${GITHUB_RUN_NUMBER}"
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create "$TAG" \
+            out/harmonizer.apk out/version.json \
+            out/HarmonizerSetup-macOS.zip out/HarmonizerSetup.exe \
+            out/Harmonizer-macOS.zip out/Harmonizer-Windows.zip out/plugin-version.json \
+            out/versions.json \
+            --title "$TAG" \
+            --notes "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA::7}. Kept permanently so the
+          plugin's Version history panel can roll back to it."
 
       - name: Publish to the "latest" release
         env:
@@ -318,6 +385,7 @@ jobs:
             out/harmonizer.apk out/version.json \
             out/HarmonizerSetup-macOS.zip out/HarmonizerSetup.exe \
             out/Harmonizer-macOS.zip out/Harmonizer-Windows.zip out/plugin-version.json \
+            out/versions.json \
             --title "v1.0.${GITHUB_RUN_NUMBER}" \
             --notes "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA::7}.
 
@@ -329,7 +397,8 @@ jobs:
           https://dylancleverdon.github.io/harmonizer-app/
 
           **Plugin** — \`HarmonizerSetup-macOS.zip\` or \`HarmonizerSetup.exe\`
-          installs everything and handles future updates.
+          installs everything and handles future updates. Its **Version history**
+          panel can install any past build again if an update causes a problem.
           **Android** — \`harmonizer.apk\`.
 
           The plain \`Harmonizer-macOS.zip\` / \`Harmonizer-Windows.zip\` archives

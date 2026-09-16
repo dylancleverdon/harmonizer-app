@@ -39,15 +39,14 @@ juce::String assetUrl(const juce::String& file) {
     return juce::String(HARMONIZER_UPDATE_BASE) + "/" + file;
 }
 
-Manifest fetchManifest(juce::String& error) {
-    Manifest m;
-    auto stream = open(juce::String(HARMONIZER_UPDATE_BASE) + "/plugin-version.json");
-    if (stream == nullptr) {
-        error = "Could not reach the download page. Check your internet connection.";
-        return m;
-    }
+juce::String assetUrlForTag(const juce::String& tag, const juce::String& file) {
+    return juce::String(HARMONIZER_RELEASES_BASE) + "/" + tag + "/" + file;
+}
 
-    const auto json = juce::JSON::parse(stream->readEntireStreamAsString());
+namespace {
+
+Manifest parseManifest(const juce::var& json, juce::String& error) {
+    Manifest m;
     if (!json.isObject()) {
         error = "The download page returned something unexpected.";
         return m;
@@ -76,6 +75,53 @@ Manifest fetchManifest(juce::String& error) {
     }
     m.valid = true;
     return m;
+}
+
+}  // namespace
+
+Manifest fetchManifest(juce::String& error) {
+    auto stream = open(juce::String(HARMONIZER_UPDATE_BASE) + "/plugin-version.json");
+    if (stream == nullptr) {
+        error = "Could not reach the download page. Check your internet connection.";
+        return {};
+    }
+    return parseManifest(juce::JSON::parse(stream->readEntireStreamAsString()), error);
+}
+
+Manifest fetchManifestForTag(const juce::String& tag, juce::String& error) {
+    auto stream = open(assetUrlForTag(tag, "plugin-version.json"));
+    if (stream == nullptr) {
+        error = "Could not reach the download page. Check your internet connection.";
+        return {};
+    }
+    return parseManifest(juce::JSON::parse(stream->readEntireStreamAsString()), error);
+}
+
+juce::Array<VersionEntry> fetchVersionHistory(juce::String& error) {
+    juce::Array<VersionEntry> out;
+    auto stream = open(juce::String(HARMONIZER_UPDATE_BASE) + "/versions.json");
+    if (stream == nullptr) {
+        error = "Could not reach the download page. Check your internet connection.";
+        return out;
+    }
+
+    const auto json = juce::JSON::parse(stream->readEntireStreamAsString());
+    if (!json.isArray()) {
+        error = "The version history could not be read.";
+        return out;
+    }
+
+    for (const auto& item : *json.getArray()) {
+        if (!item.isObject()) continue;
+        VersionEntry e;
+        e.versionCode = static_cast<int>(item.getProperty("versionCode", 0));
+        e.versionName = item.getProperty("versionName", "unknown").toString();
+        e.tag = item.getProperty("tag", "").toString();
+        e.notes = item.getProperty("notes", "").toString();
+        e.publishedAt = item.getProperty("publishedAt", "").toString();
+        if (e.tag.isNotEmpty()) out.add(e);
+    }
+    return out;
 }
 
 bool download(const juce::String& url, const juce::File& dest, juce::int64 expectedBytes,
