@@ -35,7 +35,21 @@ private:
     std::unique_ptr<juce::ParameterAttachment> attachment_;
 };
 
+/** Lays its children out in a fixed number of columns, for a block of toggles. */
+class Grid final : public juce::Component {
+public:
+    Grid(int columns, int rowHeight) : columns_(columns), rowHeight_(rowHeight) {}
+    void add(juce::Component& c);
+    int preferredHeight() const;
+    void resized() override;
+
+private:
+    std::vector<juce::Component*> items_;
+    int columns_, rowHeight_;
+};
+
 class MainPage;
+class JazzPage;
 class SettingsPage;
 
 class HarmonizerAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -48,20 +62,23 @@ public:
     void resized() override;
 
 private:
+    enum class PageId { Main = 0, Jazz, Settings };
+
     void timerCallback() override;
-    void showPage(bool settings);
+    void showPage(PageId page);
 
     HarmonizerAudioProcessor& processor_;
     PluginUpdater updater_;
     look::KnobLookAndFeel knobLook_;
 
     juce::Label title_, version_;
-    juce::TextButton pageButton_{"Settings"}, panicButton_{"Panic"};
+    juce::TextButton pageButton_{"Settings"}, jazzButton_{"Jazz"}, panicButton_{"Panic"};
 
     juce::Viewport viewport_;
     std::unique_ptr<MainPage> mainPage_;
+    std::unique_ptr<JazzPage> jazzPage_;
     std::unique_ptr<SettingsPage> settingsPage_;
-    bool showingSettings_ = false;
+    PageId page_ = PageId::Main;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HarmonizerAudioProcessorEditor)
 };

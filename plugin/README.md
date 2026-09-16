@@ -55,6 +55,81 @@ the track input and the side chain **separately**, shows whether any MIDI has
 arrived, counts the sounding voices, and names the likely problem in words. If
 the side chain reads *not connected* in Logic, that is the routing to fix.
 
+## Jazz chord mode
+
+Plugin only — the Android app does not ship it. It is on its own **Jazz** page in
+the plugin window, and while it is on it takes over the harmony: the three modes
+on the main page stand down.
+
+The idea is that your left hand names a key and your horn does the rest.
+
+* **Hold one key** and that note is a **major** key centre. **Hold two or more**
+  and it is a **minor** key, on the **lowest** key held.
+* Whatever you play into the audio input is measured, read as a **scale degree**
+  of that key centre, and looked up in a dictionary of jazz chords — one chord
+  for each of the twelve degrees, chromatic notes included. Every chord in the
+  dictionary contains the note you played, so you are always a chord tone rather
+  than something the harmony has to work around.
+* The note you are playing is left out of the chord, because you are already
+  sounding it. **Double your own note** puts it back, which is worth it when you
+  are running fully wet.
+
+In C major, a D makes it `iim7` and you are the root; a B makes it `V7` and you
+are its third; an Eb makes it a passing `bIIIdim7`. In a minor key the same line
+gives `im7`, `iim7b5`, `bIIImaj7`, `V7b9` and the dorian `IV7`. The panel names
+the chord as it is written on a lead sheet and tells you which tone of it you
+are.
+
+### Chord tones
+
+Sevenths are always in. **9ths**, **11ths** and **13ths** stack on top, and the
+chord symbol follows what is switched on — the spelling is handled for you, so a
+dominant takes a `#11` rather than the natural 11 that sits a semitone off its
+third, and an altered dominant takes `b9`, `#11` and `b13`. **Harmony voices**
+caps how many notes sound; past the cap the fifth goes first and then the root,
+the two tones that say least about the chord.
+
+### Where the chord sits
+
+* **Range** — a low and a high note. Nothing sounds outside it, with the one
+  exception at the end of this bullet. Widening it
+  lets each chord find its own best register; tightening it forces successive
+  chords to share registers, which is the bluntest way there is to smooth the
+  voice leading. If you park it more than two octaves from what you are actually
+  playing, it cannot be used as written — the engine will not shift a voice that
+  far — so the chord is held closer to you instead, in tune, and the panel says
+  it has done so.
+* **Octave** — moves the register the voicer aims for by a whole octave, inside
+  whatever the range allows.
+* **Inversion** — the finer control between those steps. It rotates the voicing
+  rather than transposing it: down an inversion takes the top voice an octave
+  lower, so the chord sits lower and **your own note ends up higher inside the
+  harmony**. Up an inversion buries you in it.
+* **Voice leading** — at 0 % every chord is voiced in its own best register,
+  wherever that leaves the last one. At 100 % the voicing that moves least from
+  the chord before it wins, even where that means an odd register.
+
+### Voicing style
+
+Close, drop 2, drop 3, drop 2 & 4, rootless, quartal, shell, spread and cluster.
+Select as many as you like and the best of them for the moment is used; select
+**none** and every style is a candidate, which is the setting to leave it on if
+you would rather not think about it. **Shuffle** varies which of the chosen
+styles a new chord gets instead of always taking the highest-scoring one — it
+only ever picks from what you selected, and never mid-chord.
+
+### How it is put together
+
+The dictionary and the voicer are `plugin/Source/JazzVoicer.{h,cpp}`: integer
+music theory with no JUCE, no engine and no allocation, so they can be tested on
+their own (`plugin/Tests/JazzHarness.cpp` builds with one compiler invocation)
+and so none of this reaches the app. `PluginProcessor` reads the played pitch
+from the engine's own tracker, asks the voicer for a chord when the pitch has
+held still for about 15 ms, and feeds the result to the engine as MIDI in
+absolute-pitch mode. Notes common to the old chord and the new one are left
+alone rather than retriggered, so a held common tone really does sustain through
+the change.
+
 ## Updating
 
 Press **Check for updates** in the plugin window. It checks the releases page,

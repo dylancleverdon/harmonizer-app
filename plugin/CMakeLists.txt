@@ -66,6 +66,7 @@ target_sources(HarmonizerPlugin PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
         Source/PluginUpdater.cpp
+        Source/JazzVoicer.cpp
         Shared/HarmonizerInstall.cpp
         ${DSP_DIR}/Fft.cpp
         ${DSP_DIR}/Resampler.cpp
@@ -117,6 +118,7 @@ if(HARMONIZER_BUILD_TESTS)
             Source/PluginProcessor.cpp
             Source/PluginEditor.cpp
             Source/PluginUpdater.cpp
+            Source/JazzVoicer.cpp
             Shared/HarmonizerInstall.cpp
             ${DSP_DIR}/Fft.cpp
             ${DSP_DIR}/Resampler.cpp
@@ -146,6 +148,15 @@ if(HARMONIZER_BUILD_TESTS)
             PUBLIC
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
+
+    # The jazz chord dictionary and voicer are plain C++ -- no JUCE, no engine --
+    # so their checks build and run without any of the above. Kept separate so a
+    # musical regression is findable without reading past a plugin host.
+    add_executable(HarmonizerJazzTest
+            Tests/JazzHarness.cpp
+            Source/JazzVoicer.cpp)
+    target_include_directories(HarmonizerJazzTest PRIVATE Source)
+    target_compile_features(HarmonizerJazzTest PRIVATE cxx_std_17)
 endif()
 
 # ---------------------------------------------------------------------------
