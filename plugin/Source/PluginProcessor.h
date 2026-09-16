@@ -88,6 +88,7 @@ public:
         int   chordRootPc = -1;
         int   typeIndex = 0;
         int   styleIndex = 0;
+        bool  customVoicing = false;   // named by a custom entry, not the built-in dictionary
         int   melodyNote = -1;
         int   melodyDegree = 1;
         float melodyHz = 0.0f;
@@ -144,17 +145,18 @@ public:
         static constexpr const char* jazzCustomOn = "jazzCustomOn";
         static constexpr const char* jazzCustomUseMajor = "jazzCustomUseMajor";
         static constexpr const char* jazzCustomUseMinor = "jazzCustomUseMinor";
-        // One chord type per scale degree, per context. Each entry is always
-        // rooted on the note being played -- that is what guarantees the
-        // played note stays a tone of the chord, the way the built-in
-        // dictionary always promised, without the editor having to enforce it.
-        static const char* const jazzCustomMajorType[12];
-        static const char* const jazzCustomMinorType[12];
+        // Each scale degree's custom entry is an explicit voicing: up to
+        // jazz::kMaxVoicingNotes semitone-offset "slots", per context. Each
+        // entry is always rooted on the note being played -- that is what
+        // guarantees the played note stays a tone of the chord, the way the
+        // built-in dictionary always promised, without the editor having to
+        // enforce it. IDs are generated rather than hand-written: 2 contexts
+        // x 12 degrees x jazz::kMaxVoicingNotes slots is too many to list.
+        static juce::String jazzCustomOffsetId(bool minor, int degree, int slot);
     };
 
     static const juce::StringArray kFftChoices;
     static const juce::StringArray kJazzStyleNames;
-    static const juce::StringArray kJazzCustomTypeNames;   // "Maj7", "Dom7" ...
 
     /**
      * Custom chord dictionaries saved as named presets, independent of the
@@ -168,6 +170,67 @@ public:
     bool saveJazzDictionaryPreset(const juce::String& name) const;
     bool loadJazzDictionaryPreset(const juce::String& name);
     bool deleteJazzDictionaryPreset(const juce::String& name) const;
+
+    /**
+     * Custom voicing editing, for the keyboard editor in the Jazz page. All
+     * message thread only, like every other editor-to-processor parameter
+     * write -- the audio thread only ever reads the settled result through
+     * jazzSettings().
+     */
+    jazz::CustomEntry jazzCustomEntry(bool minor, int degree) const;
+    void setJazzCustomVoicingNote(bool minor, int degree, int semitoneOffset, bool on);
+    void clearJazzCustomVoicing(bool minor, int degree);
+
+    /** Copies one degree's voicing onto another (or into the other context),
+     *  transposed by the semitone distance between the two degrees -- "copy
+     *  this chord to a different note and shift it up or down." Overwrites
+     *  whatever the destination had. */
+    void copyJazzCustomVoicing(bool fromMinor, int fromDegree, bool toMinor, int toDegree);
+
+    /** Copies every degree from one context onto the other, degree for
+     *  degree -- no transposition, since major and minor already share the
+     *  same twelve scale degrees. The way to reuse a table built for one
+     *  context as a starting point for the other. */
+    void copyJazzCustomTable(bool fromMinor, bool toMinor);
+
+    /**
+     * Record mode: while active, incoming MIDI note-ons are diverted from
+     * their usual jobs (naming a key centre, or playing straight through)
+     * into a capture buffer instead, exactly like clicking notes on the
+     * keyboard editor but played on a real controller. Starting clears
+     * whatever was captured before; stopping leaves the buffer alone, so a
+     * "Save" button can commit it afterwards. Notes are absolute MIDI note
+     * numbers, on the same middle-C-as-root convention the keyboard editor
+     * itself uses -- the editor is what turns them into offsets.
+     */
+    void setJazzCustomRecording(bool active);
+    bool jazzCustomRecording() const { return jazzRecordActive_.load(); }
+    juce::Array<int> jazzCustomRecordedNotes() const;
+    void clearJazzCustomRecordedNotes();
+
+    struct MidiImportSummary {
+        bool ok = false;
+        juce::String error;
+        int keySegments = 0;
+        int chordsAnalyzed = 0;
+        int degreesFilled = 0;
+    };
+
+    /**
+     * Finds the key centre(s) and chords in a .mid file and replaces the
+     * whole custom dictionary with what it found -- the same result running
+     * the keyboard editor by hand would give, for as much of the twelve
+     * degrees (each context) as the file gave evidence for. A degree the
+     * file never touched is left blank, falling back to the built-in
+     * dictionary the same way an unfilled hand-built entry does.
+     */
+    MidiImportSummary importJazzCustomDictionaryFromMidiFile(const juce::File& file);
+
+    /** How a custom voicing's semitone offsets are packed into an
+     *  AudioParameterInt: 0 means "unused", everything else maps onto
+     *  -jazz::kMaxCustomOffset..+jazz::kMaxCustomOffset. */
+    static int jazzCustomOffsetToRaw(int semitoneOffset);
+    static int jazzCustomRawToOffset(int raw);
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -229,12 +292,19 @@ private:
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
     std::atomic<float>* pJazzCustomUseMinor_ = nullptr;
-    std::atomic<float>* pJazzCustomMajorType_[12] = {};
-    std::atomic<float>* pJazzCustomMinorType_[12] = {};
+    // [context: 0 = major, 1 = minor][degree 0..11][slot 0..kMaxVoicingNotes)
+    std::atomic<float>* pJazzCustomOffset_[2][12][jazz::kMaxVoicingNotes] = {};
 
-    /** Sets a parameter by id from the message thread -- used by preset load,
-     *  which has to write many parameters at once outside of any UI control. */
-    void setParamValue(const char* id, float rawValue);
+    // Record mode's capture buffer -- see setJazzCustomRecording(). Written
+    // only from the audio thread, read from the message thread by the editor.
+    std::atomic<bool> jazzRecordActive_{false};
+    std::atomic<int> jazzRecordNotes_[jazz::kMaxVoicingNotes];
+    void addJazzCustomRecordedNote(int note);
+
+    /** Sets a parameter by id from the message thread -- used by preset load
+     *  and by the custom voicing editor, both of which write parameters
+     *  outside of any bound UI control. */
+    void setParamValue(const juce::String& id, float rawValue);
 
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as
@@ -250,6 +320,7 @@ private:
     // Read by the editor; see JazzView.
     std::atomic<bool>  jvSounding_{false};
     std::atomic<int>   jvKeyCentre_{-1}, jvDegree_{0}, jvRoot_{-1}, jvType_{0}, jvStyle_{0};
+    std::atomic<bool>  jvCustomVoicing_{false};
     std::atomic<int>   jvMelodyNote_{-1}, jvMelodyDegree_{1}, jvCount_{0}, jvHeldKeys_{0};
     std::atomic<bool>  jvMinor_{false}, jvLimited_{false};
     std::atomic<int>   jvWindowLow_{0}, jvWindowHigh_{127};

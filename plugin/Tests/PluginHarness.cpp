@@ -475,7 +475,13 @@ static void testJazzCustomDictionary() {
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
-    setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 4);  // Min7b5
+    // Degree 9 (the sixth) gets a Min7b5-quality voicing: minor third, tritone,
+    // minor seventh above the root. Cleared first -- every degree starts out
+    // seeded with a built-in-equivalent voicing, not blank.
+    p.clearJazzCustomVoicing(false, 9);
+    p.setJazzCustomVoicingNote(false, 9, 3, true);
+    p.setJazzCustomVoicingNote(false, 9, 6, true);
+    p.setJazzCustomVoicingNote(false, 9, 10, true);
 
     p.setPlayConfigDetails(1, 1, sr, 256);
     p.prepareToPlay(sr, 256);
@@ -494,11 +500,55 @@ static void testJazzCustomDictionary() {
         p.processBlock(buffer, midi);
     }
     const auto v = p.jazzView();
-    check(v.sounding && v.chordRootPc == 9 && v.typeIndex == static_cast<int>(jazz::ChordType::Min7b5) &&
-              v.melodyNote == 57 && v.melodyDegree == 1,
-          juce::String("C held, A3 played, custom A degree set to Min7b5 -> root ") +
+    bool haveMinorThird = false, haveTritone = false, haveMinorSeventh = false;
+    for (int i = 0; i < v.noteCount; ++i) {
+        switch (((v.notes[i] - v.chordRootPc) % 12 + 12) % 12) {
+            case 3:  haveMinorThird = true; break;
+            case 6:  haveTritone = true; break;
+            case 10: haveMinorSeventh = true; break;
+            default: break;
+        }
+    }
+    check(v.sounding && v.chordRootPc == 9 && v.customVoicing && v.melodyNote == 57 &&
+              v.melodyDegree == 1 && haveMinorThird && haveTritone && haveMinorSeventh,
+          juce::String("C held, A3 played, custom A degree set to a Min7b5-quality voicing -> root ") +
               (v.chordRootPc >= 0 ? jazz::pitchClassName(v.chordRootPc) : "?") + " " + v.roman +
               ", you are the " + jazz::degreeName(v.melodyDegree));
+
+    // Copying a voicing to another degree shifts it by the distance between
+    // them, so it keeps the same shape relative to whichever note reaches
+    // that new degree; copying to another context copies it untransposed.
+    {
+        p.copyJazzCustomVoicing(false, 9, false, 2);   // major 9 (b3,b5,b7) -> major 2
+        const auto copied = p.jazzCustomEntry(false, 2);
+        bool haveShiftedThird = false, haveShiftedFifth = false, haveShiftedSeventh = false;
+        for (int i = 0; i < copied.count; ++i) {
+            switch (copied.offsets[i]) {
+                // Degree 9 -> 2 is a shift of -7 semitones: 3 -> -4, 6 -> -1, 10 -> 3.
+                case -4: haveShiftedThird = true; break;
+                case -1: haveShiftedFifth = true; break;
+                case 3:  haveShiftedSeventh = true; break;
+                default: break;
+            }
+        }
+        check(copied.count == 3 && haveShiftedThird && haveShiftedFifth && haveShiftedSeventh,
+              juce::String("copying to another degree shifts every tone by the same amount (got ") +
+                  juce::String(copied.count) + " notes)");
+
+        p.copyJazzCustomVoicing(false, 9, true, 9);   // major 9 -> minor 9, no shift
+        const auto crossContext = p.jazzCustomEntry(true, 9);
+        bool haveThirdNoShift = false, haveTritoneNoShift = false, haveSeventhNoShift = false;
+        for (int i = 0; i < crossContext.count; ++i) {
+            switch (crossContext.offsets[i]) {
+                case 3:  haveThirdNoShift = true; break;
+                case 6:  haveTritoneNoShift = true; break;
+                case 10: haveSeventhNoShift = true; break;
+                default: break;
+            }
+        }
+        check(crossContext.count == 3 && haveThirdNoShift && haveTritoneNoShift && haveSeventhNoShift,
+              "copying to the other context copies the voicing untransposed");
+    }
 
     // Minor was never turned on for the custom dictionary, so two keys still
     // fall back to the ordinary built-in minor dictionary rather than reusing
@@ -533,6 +583,57 @@ static void testJazzCustomDictionary() {
                   mv.roman + ")");
     }
 
+    // Record mode: MIDI note-ons captured while it is active build a voicing
+    // by ear, on the same middle-C-as-root convention the keyboard editor
+    // uses, instead of naming a key centre or sounding through the engine.
+    {
+        HarmonizerAudioProcessor recP;
+        setValue(recP, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        recP.setPlayConfigDetails(1, 1, sr, 256);
+        recP.prepareToPlay(sr, 256);
+
+        check(!recP.jazzCustomRecording(), "record mode starts off");
+        recP.setJazzCustomRecording(true);
+        check(recP.jazzCustomRecording(), "record mode switches on");
+
+        juce::AudioBuffer<float> silent(1, 256);
+        silent.clear();
+        juce::MidiBuffer midi;
+        // A C major triad an octave above middle C: 72, 76, 79.
+        for (int note : {72, 76, 79}) midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+        recP.processBlock(silent, midi);
+
+        const auto captured = recP.jazzCustomRecordedNotes();
+        check(captured.size() == 3 && captured.contains(72) && captured.contains(76) &&
+                  captured.contains(79),
+              juce::String("captured the notes played while recording (got ") +
+                  juce::String(captured.size()) + ")");
+
+        // Notes captured while recording do not name a key centre -- jazz
+        // mode has nothing held, so nothing sounds.
+        check(!recP.jazzView().sounding,
+              "notes captured while recording do not also drive jazz mode's own key centre");
+
+        // Reset clears the buffer without leaving record mode.
+        recP.clearJazzCustomRecordedNotes();
+        check(recP.jazzCustomRecordedNotes().isEmpty() && recP.jazzCustomRecording(),
+              "reset clears the capture buffer but stays in record mode");
+
+        // Recapture and commit to a degree, the way the editor's Save button
+        // does -- offsets relative to middle C (60).
+        juce::MidiBuffer midi2;
+        for (int note : {72, 76, 79}) midi2.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+        recP.processBlock(silent, midi2);
+        const auto toCommit = recP.jazzCustomRecordedNotes();
+        recP.clearJazzCustomVoicing(false, 4);
+        for (int note : toCommit) recP.setJazzCustomVoicingNote(false, 4, note - 60, true);
+        recP.setJazzCustomRecording(false);
+
+        const auto committed = recP.jazzCustomEntry(false, 4);
+        check(!recP.jazzCustomRecording(), "saving stops record mode");
+        check(committed.count == 3, "the recorded voicing committed to the chosen degree");
+    }
+
     // Presets: a save/load/delete round trip through the small file-backed
     // library, independent of host session state.
     {
@@ -543,13 +644,22 @@ static void testJazzCustomDictionary() {
         check(p.jazzDictionaryPresetNames().contains(name), "it shows up in the preset list");
 
         // Change the live dictionary, then load the preset back over it.
-        setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 0);  // Maj7
+        p.clearJazzCustomVoicing(false, 9);
+        p.setJazzCustomVoicingNote(false, 9, 4, true);   // Maj7-quality, for now
         check(p.loadJazzDictionaryPreset(name), "the preset loads");
-        const float loadedBack = *p.apvts.getRawParameterValue(
-            HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9]);
-        check(juce::roundToInt(loadedBack) == 4,
-              juce::String("loading the preset restores the saved chord type (got ") +
-                  juce::String(juce::roundToInt(loadedBack)) + ")");
+        const auto loadedBack = p.jazzCustomEntry(false, 9);
+        bool loadedMinorThird = false, loadedTritone = false, loadedMinorSeventh = false;
+        for (int i = 0; i < loadedBack.count; ++i) {
+            switch (loadedBack.offsets[i]) {
+                case 3:  loadedMinorThird = true; break;
+                case 6:  loadedTritone = true; break;
+                case 10: loadedMinorSeventh = true; break;
+                default: break;
+            }
+        }
+        check(loadedBack.count == 3 && loadedMinorThird && loadedTritone && loadedMinorSeventh,
+              juce::String("loading the preset restores the saved voicing (got ") +
+                  juce::String(loadedBack.count) + " notes)");
 
         check(p.deleteJazzDictionaryPreset(name), "the preset deletes");
         check(!p.jazzDictionaryPresetNames().contains(name), "and is gone from the list");

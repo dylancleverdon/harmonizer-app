@@ -58,24 +58,43 @@ enum class Style {
 };
 inline constexpr int kStyleCount = static_cast<int>(Style::Count);
 
+// How far a custom voicing's tones may sit from the root, in semitones --
+// four octaves either way. The engine folds anything outside the range
+// window back in regardless, so this is only a bound on how the value is
+// stored (a keyboard editor, record mode, and MIDI import all need one).
+inline constexpr int kMaxCustomOffset = 48;
+
 /**
  * A user-built alternative to the dictionary baked into JazzVoicer.cpp: for
- * each of the twelve chromatic scale degrees, which chord type plays. The
- * chord is always rooted on the note you actually play -- which is what
- * keeps the one rule the built-in dictionary never breaks intact here too:
- * the played note is always a tone of the chord (its root, in this case). It
- * is defined once in terms of the key centre, exactly the way the built-in
- * dictionary is, so building it once already covers all twelve keys --
- * naming a key centre just transposes it, the same as it always did.
+ * each of the twelve chromatic scale degrees, an explicit voicing rather
+ * than a chord type. The chord is always rooted on the note you actually
+ * play -- which is what keeps the one rule the built-in dictionary never
+ * breaks intact here too: the played note is always a tone of the chord
+ * (its root, in this case). It is defined once in terms of the key centre,
+ * exactly the way the built-in dictionary is, so building it once already
+ * covers all twelve keys -- naming a key centre just transposes it, the
+ * same as it always did.
+ *
+ * Offsets are exact semitones above that root, not folded into an octave --
+ * a voicing built two octaves wide keeps that spread until the range and
+ * voice-leading settings below refold it, the same as any other jazz chord.
+ * They carry no shape or extension of their own: whatever was picked on a
+ * keyboard, recorded, or read out of a MIDI file plays exactly as given,
+ * which is what makes the same entry serve manual editing, a recorded
+ * voicing and an imported one without three different representations.
  */
 struct CustomEntry {
-    ChordType type = ChordType::Maj7;
+    int offsets[kMaxVoicingNotes] = {};
+    int count = 0;   // 0 = nothing chosen -- this degree falls back to the
+                     // built-in dictionary rather than sounding no harmony
 };
 
 struct CustomDictionary {
     // Off means "fall back to the built-in dictionary for that context" -- a
     // custom major table with minor left off still gives you the ordinary
-    // minor dictionary the moment a second key is held.
+    // minor dictionary the moment a second key is held. The same fallback
+    // happens per degree: a CustomEntry with count == 0 uses the built-in
+    // chord for its degree even while the rest of the table overrides theirs.
     bool useMajor = false;
     bool useMinor = false;
     CustomEntry major[12];
@@ -135,8 +154,13 @@ struct Voicing {
     bool minorKey = false;
     int  scaleDegree = 0;        // 0..11, played note above the key centre
     int  chordRootPc = -1;
-    ChordType type = ChordType::Maj7;
+    ChordType type = ChordType::Maj7;   // meaningless when customVoicing is set
     const char* roman = "";      // "iim7", "V7", "bVII7" ...
+
+    // True when a custom dictionary entry (not the built-in dictionary)
+    // named this chord -- it has no fixed chord type, so the display has to
+    // spell it from its actual notes instead of the usual type-based symbol.
+    bool customVoicing = false;
 
     Style style = Style::Close;
     int  melodyNote = -1;        // what the player is actually sounding
@@ -189,12 +213,32 @@ private:
 /** Flats, because that is how these chords are spelled on a lead sheet. */
 const char* pitchClassName(int pitchClass);
 
-/** "Dm9", "G13", "Ebmaj7#11" -- the chord as written, extensions included. */
+/** "Dm9", "G13", "Ebmaj7#11" -- the chord as written, extensions included.
+ *  For a custom voicing (v.customVoicing) there is no fixed chord type to
+ *  spell it from, so this names the root followed by its actual tones
+ *  instead -- always correct rather than guessed. */
 void chordSymbol(const Voicing& v, const Settings& s, char* out, int outSize);
 
 const char* styleName(Style style);
 
 /** "root", "3rd", "b9" ... -- what the player's own note is inside the chord. */
 const char* degreeName(int degree);
+
+/** "R", "b9", "9", "b3", "3", "11", "#11", "5", "b13", "13", "b7", "7" -- the
+ *  generic upper-structure name of a semitone offset above a chord root,
+ *  independent of chord quality. A custom voicing has no chord type to name
+ *  its tones against, so this is what labels them instead: on the keyboard
+ *  editor, in a recorded voicing, and in the custom chord symbol above. */
+const char* intervalName(int semitonesAboveRoot);
+
+/**
+ * The plain, unextended tones of a built-in chord type -- third, fifth,
+ * seventh, in that order -- as semitones above the root. Writes at most
+ * maxOffsets of them into outOffsets and returns how many. Used to seed a
+ * custom entry with a sensible starting voicing (turning the custom
+ * dictionary on for the first time, or loading a preset saved by an older,
+ * chord-type-based version of it) without duplicating the type table.
+ */
+int chordTypeTones(ChordType type, int* outOffsets, int maxOffsets);
 
 }  // namespace jazz

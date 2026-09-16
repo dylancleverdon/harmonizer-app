@@ -2,7 +2,10 @@
 #include "PluginEditor.h"
 #include "PluginUpdater.h"
 
+#include "JazzMidiImport.h"
+
 #include <mutex>
+#include <vector>
 
 namespace {
 
@@ -65,22 +68,11 @@ const char* const HarmonizerAudioProcessor::ParamId::jazzStyle[jazz::kStyleCount
     "jazzStyleCluster"
 };
 
-const juce::StringArray HarmonizerAudioProcessor::kJazzCustomTypeNames {
-    "Maj7", "Dom7", "Dom7 alt", "Min7", "Min7b5", "Dim7"
-};
-
-const char* const HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[12] = {
-    "jazzCustomMajorType0",  "jazzCustomMajorType1",  "jazzCustomMajorType2",
-    "jazzCustomMajorType3",  "jazzCustomMajorType4",  "jazzCustomMajorType5",
-    "jazzCustomMajorType6",  "jazzCustomMajorType7",  "jazzCustomMajorType8",
-    "jazzCustomMajorType9",  "jazzCustomMajorType10", "jazzCustomMajorType11",
-};
-const char* const HarmonizerAudioProcessor::ParamId::jazzCustomMinorType[12] = {
-    "jazzCustomMinorType0",  "jazzCustomMinorType1",  "jazzCustomMinorType2",
-    "jazzCustomMinorType3",  "jazzCustomMinorType4",  "jazzCustomMinorType5",
-    "jazzCustomMinorType6",  "jazzCustomMinorType7",  "jazzCustomMinorType8",
-    "jazzCustomMinorType9",  "jazzCustomMinorType10", "jazzCustomMinorType11",
-};
+juce::String HarmonizerAudioProcessor::ParamId::jazzCustomOffsetId(bool minor, int degree,
+                                                                    int slot) {
+    return juce::String(minor ? "jazzCustomMinorOffset" : "jazzCustomMajorOffset") +
+           juce::String(degree) + "_" + juce::String(slot);
+}
 
 HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     : AudioProcessor(BusesProperties()
@@ -130,11 +122,16 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
     pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
     pJazzCustomUseMinor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMinor);
-    for (int i = 0; i < 12; ++i) {
-        pJazzCustomMajorType_[i] = apvts.getRawParameterValue(ParamId::jazzCustomMajorType[i]);
-        pJazzCustomMinorType_[i] = apvts.getRawParameterValue(ParamId::jazzCustomMinorType[i]);
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        for (int degree = 0; degree < 12; ++degree) {
+            for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+                pJazzCustomOffset_[ctx][degree][slot] = apvts.getRawParameterValue(
+                    ParamId::jazzCustomOffsetId(ctx == 1, degree, slot));
+            }
+        }
     }
     for (auto& n : jvNotes_) n.store(-1);
+    for (auto& n : jazzRecordNotes_) n.store(-1);
 
     // The shuffle should not play the same sequence of voicings every time the
     // plugin is loaded.
@@ -266,24 +263,46 @@ HarmonizerAudioProcessor::createLayout() {
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzCustomUseMinor, 1}, "Custom Dictionary For Minor", false));
 
-    // Seeded from the built-in dictionary's chord qualities, so turning this
-    // on starts from a chord you already know on every degree -- each now
-    // rooted on its own degree instead -- rather than Imaj7 everywhere.
+    // Each degree's entry is an explicit voicing rather than a chord type:
+    // jazz::kMaxVoicingNotes "slot" parameters, each either 0 (unused) or a
+    // semitone offset above the root packed as jazzCustomOffsetToRaw() below
+    // describes. Seeded from the built-in dictionary's own chord qualities --
+    // third, fifth, seventh, each now rooted on its own degree instead --
+    // so turning the custom dictionary on for the first time starts from a
+    // voicing you already know rather than a blank keyboard.
     constexpr int kDefaultMajorType[12] = {0, 1, 3, 5, 0, 0, 1, 1, 0, 3, 1, 1};
     constexpr int kDefaultMinorType[12] = {3, 0, 4, 0, 1, 3, 4, 2, 0, 1, 1, 2};
 
-    for (int i = 0; i < 12; ++i) {
-        layout.add(std::make_unique<AudioParameterChoice>(
-            ParameterID{ParamId::jazzCustomMajorType[i], 1},
-            "Custom Major " + juce::String(i) + " Type", kJazzCustomTypeNames,
-            kDefaultMajorType[i]));
-        layout.add(std::make_unique<AudioParameterChoice>(
-            ParameterID{ParamId::jazzCustomMinorType[i], 1},
-            "Custom Minor " + juce::String(i) + " Type", kJazzCustomTypeNames,
-            kDefaultMinorType[i]));
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        const bool minor = ctx == 1;
+        for (int degree = 0; degree < 12; ++degree) {
+            int seedOffsets[3] = {};
+            const int typeIndex = minor ? kDefaultMinorType[degree] : kDefaultMajorType[degree];
+            const int seedCount = jazz::chordTypeTones(
+                static_cast<jazz::ChordType>(typeIndex), seedOffsets, 3);
+
+            for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+                const int defaultRaw =
+                    slot < seedCount ? jazzCustomOffsetToRaw(seedOffsets[slot]) : 0;
+                layout.add(std::make_unique<AudioParameterInt>(
+                    ParameterID{ParamId::jazzCustomOffsetId(minor, degree, slot), 1},
+                    "Custom " + juce::String(minor ? "Minor " : "Major ") + juce::String(degree) +
+                        " Slot " + juce::String(slot),
+                    0, jazz::kMaxCustomOffset * 2 + 1, defaultRaw));
+            }
+        }
     }
 
     return layout;
+}
+
+int HarmonizerAudioProcessor::jazzCustomOffsetToRaw(int semitoneOffset) {
+    return juce::jlimit(-jazz::kMaxCustomOffset, jazz::kMaxCustomOffset, semitoneOffset) +
+           jazz::kMaxCustomOffset + 1;
+}
+
+int HarmonizerAudioProcessor::jazzCustomRawToOffset(int raw) {
+    return raw - jazz::kMaxCustomOffset - 1;
 }
 
 jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
@@ -306,15 +325,191 @@ jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
     s.useCustomDictionary = pJazzCustomOn_->load() > 0.5f;
     s.customDict.useMajor = pJazzCustomUseMajor_->load() > 0.5f;
     s.customDict.useMinor = pJazzCustomUseMinor_->load() > 0.5f;
-    for (int i = 0; i < 12; ++i) {
-        s.customDict.major[i].type = static_cast<jazz::ChordType>(juce::jlimit(
-            0, static_cast<int>(jazz::ChordType::Count) - 1,
-            static_cast<int>(std::lround(pJazzCustomMajorType_[i]->load()))));
-        s.customDict.minor[i].type = static_cast<jazz::ChordType>(juce::jlimit(
-            0, static_cast<int>(jazz::ChordType::Count) - 1,
-            static_cast<int>(std::lround(pJazzCustomMinorType_[i]->load()))));
+    for (int degree = 0; degree < 12; ++degree) {
+        s.customDict.major[degree] = jazzCustomEntry(false, degree);
+        s.customDict.minor[degree] = jazzCustomEntry(true, degree);
     }
     return s;
+}
+
+jazz::CustomEntry HarmonizerAudioProcessor::jazzCustomEntry(bool minor, int degree) const {
+    jazz::CustomEntry entry;
+    if (degree < 0 || degree > 11) return entry;
+    const int ctx = minor ? 1 : 0;
+    for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+        const int raw = static_cast<int>(std::lround(pJazzCustomOffset_[ctx][degree][slot]->load()));
+        if (raw > 0) entry.offsets[entry.count++] = jazzCustomRawToOffset(raw);
+    }
+    return entry;
+}
+
+void HarmonizerAudioProcessor::setJazzCustomVoicingNote(bool minor, int degree,
+                                                        int semitoneOffset, bool on) {
+    if (degree < 0 || degree > 11) return;
+    const int ctx = minor ? 1 : 0;
+    int emptySlot = -1;
+    for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+        const int raw = static_cast<int>(std::lround(pJazzCustomOffset_[ctx][degree][slot]->load()));
+        if (raw > 0 && jazzCustomRawToOffset(raw) == semitoneOffset) {
+            if (!on) setParamValue(ParamId::jazzCustomOffsetId(minor, degree, slot), 0.0f);
+            return;
+        }
+        if (raw == 0 && emptySlot < 0) emptySlot = slot;
+    }
+    // Toggling a note already off with nothing to remove is a no-op; toggling
+    // one on when every slot is already taken is quietly ignored rather than
+    // replacing a note the player did not ask to lose.
+    if (on && emptySlot >= 0) {
+        setParamValue(ParamId::jazzCustomOffsetId(minor, degree, emptySlot),
+                     static_cast<float>(jazzCustomOffsetToRaw(semitoneOffset)));
+    }
+}
+
+void HarmonizerAudioProcessor::clearJazzCustomVoicing(bool minor, int degree) {
+    if (degree < 0 || degree > 11) return;
+    for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+        setParamValue(ParamId::jazzCustomOffsetId(minor, degree, slot), 0.0f);
+    }
+}
+
+void HarmonizerAudioProcessor::copyJazzCustomVoicing(bool fromMinor, int fromDegree, bool toMinor,
+                                                      int toDegree) {
+    if (fromDegree < 0 || fromDegree > 11 || toDegree < 0 || toDegree > 11) return;
+    if (fromMinor == toMinor && fromDegree == toDegree) return;
+
+    const auto src = jazzCustomEntry(fromMinor, fromDegree);
+    // The semitone distance between the two scale degrees -- copying degree 2
+    // (a whole step above the root) onto degree 5 (a fourth) shifts every
+    // tone in the voicing up a minor third, so it still resolves the same
+    // way relative to whichever note reaches this new degree.
+    const int shift = toDegree - fromDegree;
+
+    clearJazzCustomVoicing(toMinor, toDegree);
+    for (int i = 0; i < src.count; ++i) {
+        const int shifted =
+            juce::jlimit(-jazz::kMaxCustomOffset, jazz::kMaxCustomOffset, src.offsets[i] + shift);
+        setParamValue(ParamId::jazzCustomOffsetId(toMinor, toDegree, i),
+                     static_cast<float>(jazzCustomOffsetToRaw(shifted)));
+    }
+}
+
+void HarmonizerAudioProcessor::copyJazzCustomTable(bool fromMinor, bool toMinor) {
+    if (fromMinor == toMinor) return;
+    for (int degree = 0; degree < 12; ++degree) {
+        copyJazzCustomVoicing(fromMinor, degree, toMinor, degree);
+    }
+}
+
+void HarmonizerAudioProcessor::setJazzCustomRecording(bool active) {
+    if (active) clearJazzCustomRecordedNotes();
+    jazzRecordActive_.store(active);
+}
+
+juce::Array<int> HarmonizerAudioProcessor::jazzCustomRecordedNotes() const {
+    juce::Array<int> notes;
+    for (auto& n : jazzRecordNotes_) {
+        const int v = n.load();
+        if (v >= 0) notes.add(v);
+    }
+    return notes;
+}
+
+void HarmonizerAudioProcessor::clearJazzCustomRecordedNotes() {
+    for (auto& n : jazzRecordNotes_) n.store(-1);
+}
+
+HarmonizerAudioProcessor::MidiImportSummary
+HarmonizerAudioProcessor::importJazzCustomDictionaryFromMidiFile(const juce::File& file) {
+    MidiImportSummary summary;
+
+    juce::FileInputStream stream(file);
+    if (!stream.openedOk()) {
+        summary.error = "Could not open that file.";
+        return summary;
+    }
+
+    juce::MidiFile midiFile;
+    if (!midiFile.readFrom(stream)) {
+        summary.error = "That did not read as a MIDI file.";
+        return summary;
+    }
+
+    // readFrom() leaves timestamps in ticks -- exactly what the analysis
+    // wants, since it works entirely in ticks and has no notion of tempo.
+    const int ticksPerQuarterNote = midiFile.getTimeFormat();
+    if (ticksPerQuarterNote <= 0) {
+        summary.error = "This file uses SMPTE timecode, which import does not understand.";
+        return summary;
+    }
+
+    juce::MidiMessageSequence merged;
+    for (int i = 0; i < midiFile.getNumTracks(); ++i) merged.addSequence(*midiFile.getTrack(i), 0.0);
+    merged.updateMatchedPairs();
+
+    std::vector<jazz::ImportNote> notes;
+    for (int i = 0; i < merged.getNumEvents(); ++i) {
+        const auto* holder = merged.getEventPointer(i);
+        if (holder == nullptr || !holder->message.isNoteOn() || holder->noteOffObject == nullptr) {
+            continue;
+        }
+        const double startTicks = holder->message.getTimeStamp();
+        const double endTicks = holder->noteOffObject->message.getTimeStamp();
+        if (endTicks <= startTicks) continue;
+
+        jazz::ImportNote note;
+        note.startTick = static_cast<long long>(std::llround(startTicks));
+        note.durationTicks = static_cast<long long>(std::llround(endTicks - startTicks));
+        note.pitch = holder->message.getNoteNumber();
+        notes.push_back(note);
+    }
+
+    if (notes.empty()) {
+        summary.error = "No notes found in that file.";
+        return summary;
+    }
+
+    const auto result = jazz::analyzeForCustomDictionary(
+        notes.data(), static_cast<int>(notes.size()), ticksPerQuarterNote);
+    if (result.keySegments == 0) {
+        summary.error = "Could not find a key centre in that file.";
+        return summary;
+    }
+
+    // Replaces the whole dictionary -- the same "start fresh from this" a
+    // preset load gives, since a partial merge with whatever was there
+    // before would leave it unclear which degrees came from which source.
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        const bool minor = ctx == 1;
+        for (int degree = 0; degree < 12; ++degree) {
+            const auto& entry = minor ? result.dict.minor[degree] : result.dict.major[degree];
+            clearJazzCustomVoicing(minor, degree);
+            for (int i = 0; i < entry.count; ++i) {
+                setJazzCustomVoicingNote(minor, degree, entry.offsets[i], true);
+            }
+        }
+    }
+    setParamValue(ParamId::jazzCustomUseMajor, 1.0f);
+    setParamValue(ParamId::jazzCustomUseMinor, 1.0f);
+    setParamValue(ParamId::jazzCustomOn, 1.0f);
+
+    summary.ok = true;
+    summary.keySegments = result.keySegments;
+    summary.chordsAnalyzed = result.chordsAnalyzed;
+    summary.degreesFilled = result.degreesFilled;
+    return summary;
+}
+
+void HarmonizerAudioProcessor::addJazzCustomRecordedNote(int note) {
+    if (note < 0 || note > 127) return;
+    for (auto& n : jazzRecordNotes_) {
+        if (n.load() == note) return;   // already captured
+    }
+    for (auto& n : jazzRecordNotes_) {
+        int expected = -1;
+        if (n.compare_exchange_strong(expected, note)) return;
+    }
+    // Every slot full (kMaxVoicingNotes already) -- further notes are quietly
+    // dropped, the same cap the engine itself enforces on a voicing.
 }
 
 void HarmonizerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
@@ -397,6 +592,16 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const auto* bytes = message.getRawData();
         const int size = message.getRawDataSize();
         if (size <= 0) continue;
+
+        // Record mode borrows this same MIDI stream to build a custom
+        // dictionary voicing by ear -- while it is active, notes go into its
+        // capture buffer instead of naming a key centre or sounding through
+        // the engine, the same way a click on the keyboard editor would.
+        if (jazzRecordActive_.load()) {
+            if (message.isNoteOn()) addJazzCustomRecordedNote(message.getNoteNumber());
+            midiMessages_.fetch_add(1);
+            continue;
+        }
 
         if (message.isNoteOn()) {
             hostKeyDown_[message.getNoteNumber()] = true;
@@ -567,6 +772,7 @@ void HarmonizerAudioProcessor::jazzPublish(const jazz::Voicing& v, float melodyH
     jvRoot_.store(v.chordRootPc);
     jvType_.store(static_cast<int>(v.type));
     jvStyle_.store(static_cast<int>(v.style));
+    jvCustomVoicing_.store(v.customVoicing);
     jvMelodyNote_.store(v.melodyNote);
     jvMelodyDegree_.store(v.melodyDegree);
     jvMelodyHz_.store(melodyHz);
@@ -666,9 +872,13 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         (static_cast<uint64_t>(settings.customDict.useMajor) << 1) |
         (static_cast<uint64_t>(settings.customDict.useMinor) << 2));
     if (settings.useCustomDictionary) {
-        for (int i = 0; i < 12; ++i) {
-            mix(static_cast<uint64_t>(settings.customDict.major[i].type));
-            mix(static_cast<uint64_t>(settings.customDict.minor[i].type));
+        const auto mixEntry = [&mix](const jazz::CustomEntry& e) {
+            mix(static_cast<uint64_t>(e.count));
+            for (int i = 0; i < e.count; ++i) mix(static_cast<uint64_t>(e.offsets[i] + 1000));
+        };
+        for (int degree = 0; degree < 12; ++degree) {
+            mixEntry(settings.customDict.major[degree]);
+            mixEntry(settings.customDict.minor[degree]);
         }
     }
 
@@ -695,6 +905,7 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.chordRootPc = jvRoot_.load();
     v.typeIndex = jvType_.load();
     v.styleIndex = jvStyle_.load();
+    v.customVoicing = jvCustomVoicing_.load();
     v.melodyNote = jvMelodyNote_.load();
     v.melodyDegree = jvMelodyDegree_.load();
     v.melodyHz = jvMelodyHz_.load();
@@ -725,7 +936,7 @@ void HarmonizerAudioProcessor::handleAsyncUpdate() {
 // letting one built for a project be reused in another. Message thread only.
 // ---------------------------------------------------------------------------
 
-void HarmonizerAudioProcessor::setParamValue(const char* id, float rawValue) {
+void HarmonizerAudioProcessor::setParamValue(const juce::String& id, float rawValue) {
     if (auto* p = apvts.getParameter(id)) {
         p->beginChangeGesture();
         p->setValueNotifyingHost(p->convertTo0to1(rawValue));
@@ -762,16 +973,23 @@ bool HarmonizerAudioProcessor::saveJazzDictionaryPreset(const juce::String& name
     if (name.trim().isEmpty()) return false;
 
     juce::XmlElement root("HarmonizerJazzDictionary");
+    root.setAttribute("version", 2);
     root.setAttribute("useMajor", pJazzCustomUseMajor_->load() > 0.5f);
     root.setAttribute("useMinor", pJazzCustomUseMinor_->load() > 0.5f);
-    for (int i = 0; i < 12; ++i) {
-        auto* major = root.createNewChildElement("Major");
-        major->setAttribute("degree", i);
-        major->setAttribute("type", static_cast<int>(std::lround(pJazzCustomMajorType_[i]->load())));
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        const bool minor = ctx == 1;
+        for (int degree = 0; degree < 12; ++degree) {
+            auto* el = root.createNewChildElement(minor ? "Minor" : "Major");
+            el->setAttribute("degree", degree);
 
-        auto* minor = root.createNewChildElement("Minor");
-        minor->setAttribute("degree", i);
-        minor->setAttribute("type", static_cast<int>(std::lround(pJazzCustomMinorType_[i]->load())));
+            juce::StringArray offsets;
+            for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
+                const int raw = static_cast<int>(
+                    std::lround(pJazzCustomOffset_[ctx][degree][slot]->load()));
+                if (raw > 0) offsets.add(juce::String(jazzCustomRawToOffset(raw)));
+            }
+            el->setAttribute("offsets", offsets.joinIntoString(","));
+        }
     }
     return root.writeTo(jazzPresetFile(name));
 }
@@ -783,16 +1001,46 @@ bool HarmonizerAudioProcessor::loadJazzDictionaryPreset(const juce::String& name
     setParamValue(ParamId::jazzCustomUseMajor, xml->getBoolAttribute("useMajor", false) ? 1.0f : 0.0f);
     setParamValue(ParamId::jazzCustomUseMinor, xml->getBoolAttribute("useMinor", false) ? 1.0f : 0.0f);
 
+    // Clear every slot first, so a degree the preset leaves out actually ends
+    // up blank rather than keeping whatever the live dictionary had there.
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        for (int degree = 0; degree < 12; ++degree) clearJazzCustomVoicing(ctx == 1, degree);
+    }
+
     for (auto* child : xml->getChildIterator()) {
         const int degree = child->getIntAttribute("degree", -1);
         if (degree < 0 || degree > 11) continue;
-        const float type = static_cast<float>(juce::jlimit(
-            0, static_cast<int>(jazz::ChordType::Count) - 1, child->getIntAttribute("type", 0)));
+        const bool minor = child->hasTagName("Minor");
+        if (!minor && !child->hasTagName("Major")) continue;
 
-        if (child->hasTagName("Major")) {
-            setParamValue(ParamId::jazzCustomMajorType[degree], type);
-        } else if (child->hasTagName("Minor")) {
-            setParamValue(ParamId::jazzCustomMinorType[degree], type);
+        if (child->hasAttribute("offsets")) {
+            // Current format: an explicit voicing, semitones above the root.
+            const auto parts =
+                juce::StringArray::fromTokens(child->getStringAttribute("offsets"), ",", "");
+            int slot = 0;
+            for (const auto& part : parts) {
+                if (slot >= jazz::kMaxVoicingNotes) break;
+                if (part.trim().isEmpty()) continue;
+                const int offset =
+                    juce::jlimit(-jazz::kMaxCustomOffset, jazz::kMaxCustomOffset, part.getIntValue());
+                setParamValue(ParamId::jazzCustomOffsetId(minor, degree, slot),
+                             static_cast<float>(jazzCustomOffsetToRaw(offset)));
+                ++slot;
+            }
+        } else if (child->hasAttribute("type")) {
+            // A preset saved by the version of this dictionary that picked
+            // one of six fixed chord types per degree rather than an
+            // explicit voicing. Converted on load so an old preset keeps
+            // working rather than silently coming back empty.
+            const int typeIndex = juce::jlimit(0, static_cast<int>(jazz::ChordType::Count) - 1,
+                                               child->getIntAttribute("type", 0));
+            int offsets[3] = {};
+            const int n =
+                jazz::chordTypeTones(static_cast<jazz::ChordType>(typeIndex), offsets, 3);
+            for (int slot = 0; slot < n; ++slot) {
+                setParamValue(ParamId::jazzCustomOffsetId(minor, degree, slot),
+                             static_cast<float>(jazzCustomOffsetToRaw(offsets[slot])));
+            }
         }
     }
 

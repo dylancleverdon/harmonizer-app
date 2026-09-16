@@ -123,32 +123,63 @@ only ever picks from what you selected, and never mid-chord.
 The built-in dictionary above is fixed -- twelve degrees, one chord each, hand
 picked for functional harmony. The **Custom chord dictionary** card at the
 bottom of the Jazz page is a second dictionary you build yourself, in its
-place.
+place: not a choice of a few fixed chord types, but the exact notes and
+voicing you want, played on a keyboard right there in the card.
 
-For each of the twelve notes of the key you can pick which chord type plays
-when you play it -- **Maj7**, **Dom7**, **Dom7 alt** (the altered dominant,
-b9/#11/b13), **Min7**, **Min7b5** or **Dim7**. The chord is always rooted on
-the note you actually play, so the one rule the built-in dictionary never
-breaks holds here too without anything having to enforce it: you are always a
-tone of the chord, its root. It is written once in terms of the key centre,
-the same way the built-in dictionary is, so building it once already covers
-all twelve keys -- naming a key centre just transposes it.
+For each of the twelve notes of the key you can build an exact voicing --
+whichever notes you want, in whichever octave -- by clicking them on the
+keyboard, playing them on a MIDI controller with **Record**, or letting a
+MIDI file work it out for you. The chord is always rooted on the note you
+actually play, so the one rule the built-in dictionary never breaks holds
+here too without anything having to enforce it: you are always a tone of the
+chord, its root. It is written once in terms of the key centre, the same way
+the built-in dictionary is, so building it once already covers all twelve
+keys -- naming a key centre just transposes it, and it does not matter which
+octave you play the note in either, only which one it is. The degree buttons
+are labelled as concrete notes over a held C, as a worked example: to see
+exactly what plays for a C5 on your horn over a held C, select "C".
 
-Major and minor are separate, independent toggles. Leaving one off keeps the
-**built-in** dictionary for that context, so a custom table built only for
-major still gives you the ordinary minor chords the moment a second key is
-held. Turning the whole card off (or leaving both toggles off) is the way
-back to how jazz mode has always worked -- not a one-way door. Everything
-else about jazz mode -- extensions, octave and inversion, range, voice
-leading and voicing style -- still applies on top of whichever dictionary
-answers the lookup, custom or built-in.
+Major and minor are separate, independent toggles, and so is every individual
+degree within them: leaving a degree blank falls back to the **built-in**
+chord for just that one note, so a table you have only half filled in still
+gives you ordinary chords everywhere else. Turning the whole card off (or
+leaving both context toggles off) is the way back to how jazz mode has always
+worked -- not a one-way door. Range, octave, inversion and voice leading all
+still apply on top of a custom voicing, the same as anywhere else in jazz
+mode; extensions and voicing style do not, since a voicing you built yourself
+already says exactly what it wants to be.
+
+**Record** builds a voicing by ear instead of by clicking: press it, play the
+chord on your MIDI controller as if the key you were holding were C -- the
+same reference the keyboard uses -- and every note you play joins it, shown
+highlighted live. **Reset** clears what has been captured without leaving
+record mode; **Save** writes it to the selected degree.
+
+**Copy this voicing to** moves a finished voicing to another note or context,
+shifting every tone by the distance between them so it keeps its shape --
+build one chord well and reuse it. **Copy whole major table to minor** (and
+back) copies all twelve degrees across contexts untransposed, since major and
+minor already share the same twelve scale degrees.
+
+**Generate from MIDI** runs the same idea in reverse: feed it a MIDI file and
+it finds the key centre (or centres, if the performance modulates) and, within
+each, what chord was actually played over which scale degree, filling in as
+much of the table as the file gives evidence for. It is a heuristic --
+built-in-dictionary jazz musicians do not label their own chords -- so treat
+it as a fast first draft: check the keyboard afterwards and fix anything it
+got wrong the same way you would edit a hand-built entry, including reaching
+for Record or the note grid directly. It replaces the whole dictionary, so
+save a preset first if the existing one is worth keeping.
 
 Custom dictionaries can be saved as named **presets** under the card below it,
 independent of any particular DAW project -- a dictionary built for one song
 can be loaded into another. They are stored under
 `~/Library/Application Support/Harmonizer/JazzDictionaryPresets` on macOS (the
 platform-equivalent app-data folder elsewhere) as one small XML file per
-preset. Loading a preset switches the custom dictionary on.
+preset. Loading a preset switches the custom dictionary on. A preset saved by
+an older version of this dictionary, back when it picked one of six fixed
+chord types per degree rather than an explicit voicing, still loads -- it is
+converted to the equivalent voicing on the way in.
 
 ### How it is put together
 
@@ -162,8 +193,33 @@ absolute-pitch mode. Notes common to the old chord and the new one are left
 alone rather than retriggered, so a held common tone really does sustain through
 the change. The custom dictionary lives in the same `Settings`/`Voicer` pair as
 everything else in jazz mode -- it is a per-context override of the lookup,
-not a separate code path -- and presets are a small XML file per name, read
-and written by `PluginProcessor` on the message thread only.
+not a separate code path, and a custom entry is just semitone offsets above
+the root rather than a chord type, so the same representation serves manual
+editing, a recorded voicing and an imported one without three different data
+models. Presets are a small XML file per name, read and written by
+`PluginProcessor` on the message thread only.
+
+The keyboard editor itself, `plugin/Source/PianoKeyboard.{h,cpp}`, is a plain
+JUCE component that knows nothing about jazz mode -- it shows a range of keys,
+highlights whichever are passed to it, and reports clicks. The editor decides
+what a click means; record mode reuses the same component to show live
+capture instead of a saved entry.
+
+MIDI import's analysis, `plugin/Source/JazzMidiImport.{h,cpp}`, is written the
+same way the voicer is -- no JUCE, tested on its own in
+`plugin/Tests/JazzHarness.cpp` -- so the actual key-finding and chord-reading
+logic has nothing to do with parsing a `.mid` file. It works entirely in MIDI
+ticks: a sliding window's pitch-class histogram is correlated against the
+standard Krumhansl-Kessler major and minor key profiles to guess a key centre
+a couple of bars at a time, short-lived disagreements are folded into their
+longer neighbours, and within each resulting stretch of one key, the lowest
+note sounding at each beat is read as the chord's root and everything above
+it as the voicing, with the most frequently seen voicing for each scale
+degree winning a simple vote. `PluginProcessor::importJazzCustomDictionaryFromMidiFile`
+is the thin JUCE-facing wrapper: it loads the file with `juce::MidiFile`,
+turns its matched note-on/note-off pairs into the tick-based note list the
+analysis wants, and writes the result into the same parameters the keyboard
+editor does.
 
 ## Updating
 
