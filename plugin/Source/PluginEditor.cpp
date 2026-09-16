@@ -23,6 +23,26 @@ void styleToggle(juce::ToggleButton& b, const juce::String& label) {
     b.setColour(juce::ToggleButton::tickDisabledColourId, look::surfaceVariant);
 }
 
+void styleCombo(juce::ComboBox& c) {
+    c.setColour(juce::ComboBox::backgroundColourId, look::surfaceVariant);
+    c.setColour(juce::ComboBox::textColourId, look::text);
+    c.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+    c.setColour(juce::ComboBox::arrowColourId, look::accent);
+}
+
+void fillCombo(juce::ComboBox& box, const juce::StringArray& items) {
+    for (int i = 0; i < items.size(); ++i) box.addItem(items[i], i + 1);
+}
+
+/** "1 (root)", "b2", "2" ... the scale degree a row of the custom dictionary
+ *  editor is for -- the note the player has to play to reach that chord. */
+const juce::String& customDegreeLabel(int degree) {
+    static const juce::StringArray labels {
+        "1 (root)", "b2", "2", "b3", "3", "4", "#4", "5", "b6", "6", "b7", "7"
+    };
+    return labels.getReference(juce::jlimit(0, 11, degree));
+}
+
 void styleSlider(juce::Slider& s) {
     s.setSliderStyle(juce::Slider::LinearHorizontal);
     s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 62, 20);
@@ -487,6 +507,111 @@ public:
                             "when you are running fully wet.");
         styles.addRow(doubleNote_, 30);
 
+        // --- Custom chord dictionary: a user-built alternative to the one
+        // above. It replaces which chord is picked for a degree, nothing else
+        // -- range, voice leading, extensions and style all still apply.
+        auto& customCard = addCard("Custom chord dictionary");
+        customIntro_.setText(
+            "A dictionary you build yourself, in place of the one above. Pick which chord plays "
+            "on each note of the key -- always rooted on the note you play, so you are always a "
+            "tone of it -- once, and it already covers all twelve keys the same way the built-in "
+            "dictionary does. Range, voice leading, extensions and voicing style all still apply "
+            "on top of it.");
+        customCard.addRow(customIntro_, 58);
+        styleToggle(customOn_, "Use custom dictionary");
+        customCard.addRow(customOn_, 24);
+        customStatus_.setText("");
+        customCard.addRow(customStatus_, 30);
+
+        styleToggle(customUseMajor_, "Use for major keys");
+        styleToggle(customUseMinor_, "Use for minor keys");
+        customContextGrid_.add(customUseMajor_);
+        customContextGrid_.add(customUseMinor_);
+        customCard.addRow(customContextGrid_, customContextGrid_.preferredHeight());
+        customContextNote_.setText(
+            "Leaving a context off keeps the built-in dictionary for it -- a custom major table "
+            "with minor left off still gives you the ordinary minor chords the moment a second "
+            "key is held. Turn this whole card off to get back to how jazz mode always worked.");
+        customCard.addRow(customContextNote_, 44);
+
+        majorHeading_.setText("MAJOR KEY CHORDS", look::muted);
+        customCard.addRow(majorHeading_, 14);
+        buildCustomDegreeRows(customMajorGrid_, customMajorLabels_, customMajorType_);
+        customCard.addRow(customMajorGrid_, customMajorGrid_.preferredHeight());
+
+        minorHeading_.setText("MINOR KEY CHORDS", look::muted);
+        customCard.addRow(minorHeading_, 14);
+        buildCustomDegreeRows(customMinorGrid_, customMinorLabels_, customMinorType_);
+        customCard.addRow(customMinorGrid_, customMinorGrid_.preferredHeight());
+
+        // --- Presets for that dictionary: a named library on disk, so one
+        // built for a project can be brought into another.
+        auto& presetCard = addCard("Custom dictionary presets");
+        presetsNote_.setText("Save the dictionary above under a name to come back to later, "
+                             "independent of any particular project.");
+        presetCard.addRow(presetsNote_, 30);
+
+        presetNameEditor_.setTextToShowWhenEmpty("Preset name", look::muted);
+        presetNameEditor_.setColour(juce::TextEditor::backgroundColourId, look::surfaceVariant);
+        presetNameEditor_.setColour(juce::TextEditor::textColourId, look::text);
+        presetNameEditor_.setColour(juce::TextEditor::outlineColourId,
+                                    juce::Colours::transparentBlack);
+        saveButton_.setButtonText("Save As");
+        saveRow_.addAndMakeVisible(presetNameEditor_);
+        saveRow_.addAndMakeVisible(saveButton_);
+        saveRow_.onResize = [this] {
+            saveButton_.setBounds(saveRow_.getWidth() - 90, 0, 90, saveRow_.getHeight());
+            presetNameEditor_.setBounds(0, 0, saveRow_.getWidth() - 98, saveRow_.getHeight());
+        };
+        presetCard.addRow(saveRow_, 28);
+
+        styleCombo(presetList_);
+        loadButton_.setButtonText("Load");
+        deleteButton_.setButtonText("Delete");
+        loadRow_.addAndMakeVisible(presetList_);
+        loadRow_.addAndMakeVisible(loadButton_);
+        loadRow_.addAndMakeVisible(deleteButton_);
+        loadRow_.onResize = [this] {
+            deleteButton_.setBounds(loadRow_.getWidth() - 74, 0, 74, loadRow_.getHeight());
+            loadButton_.setBounds(loadRow_.getWidth() - 156, 0, 74, loadRow_.getHeight());
+            presetList_.setBounds(0, 0, loadRow_.getWidth() - 164, loadRow_.getHeight());
+        };
+        presetCard.addRow(loadRow_, 28);
+        presetStatus_.setText("");
+        presetCard.addRow(presetStatus_, 24);
+
+        saveButton_.onClick = [this] {
+            const auto name = presetNameEditor_.getText().trim();
+            if (name.isEmpty()) {
+                presetStatus_.setText("Type a name first.", look::warn);
+                return;
+            }
+            if (processor_.saveJazzDictionaryPreset(name)) {
+                presetStatus_.setText("Saved as \"" + name + "\".", look::accent);
+                presetNameEditor_.clear();
+                refreshPresetList();
+            } else {
+                presetStatus_.setText("Could not save that preset.", look::warn);
+            }
+        };
+        loadButton_.onClick = [this] {
+            const auto name = presetList_.getText();
+            if (name.isEmpty()) return;
+            if (processor_.loadJazzDictionaryPreset(name)) {
+                presetStatus_.setText("Loaded \"" + name + "\".", look::accent);
+            } else {
+                presetStatus_.setText("Could not load that preset.", look::warn);
+            }
+        };
+        deleteButton_.onClick = [this] {
+            const auto name = presetList_.getText();
+            if (name.isEmpty()) return;
+            processor_.deleteJazzDictionaryPreset(name);
+            presetStatus_.setText("Deleted \"" + name + "\".", look::muted);
+            refreshPresetList();
+        };
+        refreshPresetList();
+
         aEnable_ = std::make_unique<BA>(apvts, P::jazzMode, enable_);
         aNinth_ = std::make_unique<BA>(apvts, P::jazzNinth, ninth_);
         aEleventh_ = std::make_unique<BA>(apvts, P::jazzEleventh, eleventh_);
@@ -500,6 +625,15 @@ public:
         aHigh_ = std::make_unique<SA>(apvts, P::jazzRangeHigh, highSlider_);
         aSmooth_ = std::make_unique<SA>(apvts, P::jazzSmoothness, smoothSlider_);
         aVoices_ = std::make_unique<SA>(apvts, P::jazzVoices, voicesSlider_);
+
+        aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
+        aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
+        aCustomUseMinor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMinor, customUseMinor_);
+        using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+        for (int i = 0; i < 12; ++i) {
+            aCustomMajorType_.add(new CA(apvts, P::jazzCustomMajorType[i], *customMajorType_[i]));
+            aCustomMinorType_.add(new CA(apvts, P::jazzCustomMinorType[i], *customMinorType_[i]));
+        }
 
         lowSlider_.textFromValueFunction = [](double v) {
             return flatNoteName(static_cast<int>(v));
@@ -607,9 +741,59 @@ public:
                                "chords to share registers, which is the bluntest way to smooth "
                                "the voice leading.", look::muted);
         }
+
+        if (!settings.useCustomDictionary) {
+            customStatus_.setText("Off -- using the built-in dictionary, as jazz mode always has.",
+                                  look::muted);
+        } else if (!settings.customDict.useMajor && !settings.customDict.useMinor) {
+            customStatus_.setText("On, but neither context below is selected, so nothing changes "
+                                  "yet -- turn on major, minor, or both.", look::warn);
+        } else {
+            const juce::String which = settings.customDict.useMajor && settings.customDict.useMinor
+                                            ? "major and minor keys"
+                                            : (settings.customDict.useMajor ? "major keys"
+                                                                            : "minor keys");
+            customStatus_.setText("On, overriding the chord dictionary for " + which + ".",
+                                  look::accent);
+        }
     }
 
 private:
+    class Holder final : public juce::Component {
+    public:
+        std::function<void()> onResize;
+        void resized() override { if (onResize) onResize(); }
+    };
+
+    /** One grid's worth of degree rows: a label plus a chord type combo box
+     *  per scale degree, bound to the twelve parameters for that context by
+     *  the caller once these exist. The chord is always rooted on the note
+     *  the label names -- there is no root to choose. */
+    void buildCustomDegreeRows(Grid& grid, juce::OwnedArray<juce::Label>& labels,
+                               juce::OwnedArray<juce::ComboBox>& types) {
+        for (int i = 0; i < 12; ++i) {
+            auto* label = labels.add(new juce::Label({}, customDegreeLabel(i)));
+            label->setColour(juce::Label::textColourId, look::muted);
+            label->setFont(juce::FontOptions(12.0f));
+
+            auto* typeBox = types.add(new juce::ComboBox());
+            styleCombo(*typeBox);
+            fillCombo(*typeBox, HarmonizerAudioProcessor::kJazzCustomTypeNames);
+
+            grid.add(*label);
+            grid.add(*typeBox);
+        }
+    }
+
+    void refreshPresetList() {
+        const auto current = presetList_.getText();
+        presetList_.clear(juce::dontSendNotification);
+        const auto names = processor_.jazzDictionaryPresetNames();
+        for (int i = 0; i < names.size(); ++i) presetList_.addItem(names[i], i + 1);
+        if (names.contains(current)) presetList_.setText(current, juce::dontSendNotification);
+        else if (!names.isEmpty()) presetList_.setSelectedItemIndex(0, juce::dontSendNotification);
+    }
+
     HarmonizerAudioProcessor& processor_;
 
     juce::ToggleButton enable_, ninth_, eleventh_, thirteenth_, shuffle_, double_;
@@ -629,6 +813,26 @@ private:
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> aStyles_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aLow_, aHigh_,
         aSmooth_, aVoices_;
+
+    // --- Custom chord dictionary.
+    juce::ToggleButton customOn_, customUseMajor_, customUseMinor_;
+    Grid customContextGrid_{2, 26};
+    Grid customMajorGrid_{2, 26}, customMinorGrid_{2, 26};
+    juce::OwnedArray<juce::Label> customMajorLabels_, customMinorLabels_;
+    juce::OwnedArray<juce::ComboBox> customMajorType_, customMinorType_;
+    look::Note customIntro_, customStatus_, customContextNote_, majorHeading_, minorHeading_;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aCustomOn_,
+        aCustomUseMajor_, aCustomUseMinor_;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> aCustomMajorType_,
+        aCustomMinorType_;
+
+    // --- Custom dictionary presets.
+    juce::TextEditor presetNameEditor_;
+    juce::ComboBox presetList_;
+    juce::TextButton saveButton_, loadButton_, deleteButton_;
+    look::Note presetsNote_, presetStatus_;
+    Holder saveRow_, loadRow_;
 };
 
 // ---------------------------------------------------------------------------
@@ -728,6 +932,40 @@ public:
         checkButton_.onClick = [this] { updater_.checkForUpdates(); };
         installButton_.onClick = [this] { updater_.downloadAndInstall(); };
         installButton_.setVisible(false);
+
+        // --- Version history: every build stays available on its own release,
+        // so an update that turns out to break something can be undone.
+        auto& history = addCard("Version history");
+        historyNote_.setText("Every build stays available, so an update that causes a problem "
+                             "can be undone. Load the list, pick a version, and it installs the "
+                             "same way an update does.");
+        history.addRow(historyNote_, 44);
+        history.addRow(loadHistoryRow_, 30);
+        loadHistoryRow_.addAndMakeVisible(loadHistoryButton_);
+        loadHistoryRow_.onResize = [this] {
+            loadHistoryButton_.setBounds(0, 0, 190, loadHistoryRow_.getHeight());
+        };
+        loadHistoryButton_.onClick = [this] { updater_.loadVersionHistory(); };
+
+        historyStatus_.setText("Not loaded yet.");
+        history.addRow(historyStatus_, 18);
+
+        history.addRow(rollBackRow_, 28);
+        styleCombo(historyCombo_);
+        rollBackRow_.addAndMakeVisible(historyCombo_);
+        rollBackRow_.addAndMakeVisible(rollBackButton_);
+        rollBackRow_.onResize = [this] {
+            rollBackButton_.setBounds(rollBackRow_.getWidth() - 150, 0, 150,
+                                      rollBackRow_.getHeight());
+            historyCombo_.setBounds(0, 0, rollBackRow_.getWidth() - 158, rollBackRow_.getHeight());
+        };
+        rollBackButton_.setButtonText("Install this version");
+        rollBackButton_.setEnabled(false);
+        rollBackButton_.onClick = [this] {
+            const int index = historyCombo_.getSelectedItemIndex();
+            if (index < 0 || index >= historyTags_.size()) return;
+            updater_.installVersion(historyTags_[index]);
+        };
 
         using SA = juce::AudioProcessorValueTreeState::SliderAttachment;
         using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -836,13 +1074,46 @@ private:
                 text = s.message; break;
         }
         updateNote_.setText(text, colour);
+
+        // Version history rides the same background worker and busy flag as
+        // the ordinary update flow above -- only one job runs at a time, and a
+        // rollback in progress shows through updateNote_ exactly like a normal
+        // install does, since both write the same Status fields.
+        loadHistoryButton_.setEnabled(!busy);
+
+        if (!s.historyLoaded) {
+            historyStatus_.setText("Not loaded yet.", look::muted);
+        } else if (s.historyError.isNotEmpty()) {
+            historyStatus_.setText(s.historyError, look::warn);
+        } else if (s.history.isEmpty()) {
+            historyStatus_.setText("No past versions found.", look::muted);
+        } else {
+            historyStatus_.setText(juce::String(s.history.size()) + " version(s) available.",
+                                   look::muted);
+        }
+
+        // Repopulate only when the set actually changed, so a selection made
+        // mid-browse is not reset by every refresh at 12 Hz.
+        if (s.history.size() != historyTags_.size()) {
+            historyCombo_.clear(juce::dontSendNotification);
+            historyTags_.clear();
+            for (int i = 0; i < s.history.size(); ++i) {
+                const auto& v = s.history.getReference(i);
+                juce::String label = v.versionName;
+                if (v.versionCode == PluginUpdater::currentVersionCode()) label += "  (installed)";
+                historyCombo_.addItem(label, i + 1);
+                historyTags_.add(v.tag);
+            }
+        }
+        rollBackButton_.setEnabled(!busy && !historyTags_.isEmpty());
     }
 
     HarmonizerAudioProcessor& processor_;
     PluginUpdater& updater_;
 
     look::Note qualityIntro_, qualityNote_, adaptiveNote_, adaptLatencyNote_, adaptVoicesNote_,
-        formantNote_, windowNote_, bypassNote_, updateNote_, windowLabel_, outputLabel_;
+        formantNote_, windowNote_, bypassNote_, updateNote_, windowLabel_, outputLabel_,
+        historyNote_, historyStatus_;
     std::unique_ptr<look::StatRow> runningRow_, amountRow_, effectiveRow_, installedRow_;
     std::unique_ptr<ChipGroup> qualityChips_, windowChips_;
     juce::Slider amountSlider_, gainSlider_;
@@ -852,6 +1123,11 @@ private:
     juce::TextButton checkButton_{"Check for updates"}, installButton_{"Download and install"};
     double updateProgress_ = 0.0;
     juce::ProgressBar updateBar_{updateProgress_};
+
+    Holder loadHistoryRow_, rollBackRow_;
+    juce::TextButton loadHistoryButton_{"Load version history"}, rollBackButton_;
+    juce::ComboBox historyCombo_;
+    juce::StringArray historyTags_;   // parallel to historyCombo_'s items
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aAmount_, aGain_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aFormant_,

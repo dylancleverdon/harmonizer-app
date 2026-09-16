@@ -58,6 +58,30 @@ enum class Style {
 };
 inline constexpr int kStyleCount = static_cast<int>(Style::Count);
 
+/**
+ * A user-built alternative to the dictionary baked into JazzVoicer.cpp: for
+ * each of the twelve chromatic scale degrees, which chord type plays. The
+ * chord is always rooted on the note you actually play -- which is what
+ * keeps the one rule the built-in dictionary never breaks intact here too:
+ * the played note is always a tone of the chord (its root, in this case). It
+ * is defined once in terms of the key centre, exactly the way the built-in
+ * dictionary is, so building it once already covers all twelve keys --
+ * naming a key centre just transposes it, the same as it always did.
+ */
+struct CustomEntry {
+    ChordType type = ChordType::Maj7;
+};
+
+struct CustomDictionary {
+    // Off means "fall back to the built-in dictionary for that context" -- a
+    // custom major table with minor left off still gives you the ordinary
+    // minor dictionary the moment a second key is held.
+    bool useMajor = false;
+    bool useMinor = false;
+    CustomEntry major[12];
+    CustomEntry minor[12];
+};
+
 struct Settings {
     // Sevenths are always in. These stack on top of them.
     bool ninth = false;
@@ -93,6 +117,13 @@ struct Settings {
     bool doubleMelody = false;
 
     int maxNotes = kMaxVoicingNotes;
+
+    // A custom dictionary replaces the built-in chord-per-degree lookup,
+    // context by context (see CustomDictionary above). Everything else in
+    // this struct -- extensions, register, smoothness, style and voice count
+    // -- still applies on top of whichever dictionary answers the lookup.
+    bool useCustomDictionary = false;
+    CustomDictionary customDict;
 };
 
 struct Voicing {
@@ -143,6 +174,12 @@ private:
     int  prev_[kMaxVoicingNotes] = {};
     int  prevCount_ = 0;
     unsigned rng_ = 0x9E3779B9u;
+
+    // A custom dictionary entry has no static string to point Voicing::roman
+    // at, so one is built into this buffer as it is looked up. It stays valid
+    // for the life of the Voicer, which is what the published UI pointer
+    // actually needs -- see PluginProcessor's jvRoman_.
+    char customRomanBuf_[24] = {};
 
     float nextRandom();
 };

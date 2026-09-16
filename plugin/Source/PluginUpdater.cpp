@@ -44,11 +44,49 @@ void PluginUpdater::downloadAndInstall() {
     startThread();
 }
 
+void PluginUpdater::loadVersionHistory() {
+    if (isThreadRunning()) return;
+    job_ = Job::History;
+    startThread();
+}
+
+void PluginUpdater::installVersion(const juce::String& tag) {
+    if (isThreadRunning() || tag.isEmpty()) return;
+    pendingTag_ = tag;
+    job_ = Job::InstallVersion;
+    setStage(Stage::Downloading, "Fetching version " + tag + "...");
+    setProgress(0.0);
+    startThread();
+}
+
 void PluginUpdater::run() {
     juce::String error;
-    const bool ok = (job_ == Job::Check) ? doCheck(error) : doInstall(error);
-    if (!ok) setStage(Stage::Failed, error.isEmpty() ? "Something went wrong." : error);
+    bool ok = true;
+    switch (job_) {
+        case Job::Check:          ok = doCheck(error); break;
+        case Job::Install:        ok = doInstall(error); break;
+        case Job::History:        ok = doLoadHistory(); break;
+        case Job::InstallVersion: ok = doInstallVersion(error); break;
+        case Job::None:           break;
+    }
+    // A history load reports its own failure through Status::historyError
+    // rather than the shared Stage, so it does not stomp on whatever the
+    // ordinary update flow was last showing.
+    if (!ok && job_ != Job::History) {
+        setStage(Stage::Failed, error.isEmpty() ? "Something went wrong." : error);
+    }
     job_ = Job::None;
+}
+
+bool PluginUpdater::doLoadHistory() {
+    juce::String error;
+    auto history = harmonizer::install::fetchVersionHistory(error);
+
+    const juce::ScopedLock sl(lock_);
+    status_.historyLoaded = true;
+    status_.historyError = error;
+    status_.history = std::move(history);
+    return true;
 }
 
 bool PluginUpdater::doCheck(juce::String& error) {
@@ -79,13 +117,40 @@ bool PluginUpdater::doInstall(juce::String& error) {
         error = "Check for updates first.";
         return false;
     }
+    return performInstall(install::assetUrl(assetFile_), error);
+}
 
+bool PluginUpdater::doInstallVersion(juce::String& error) {
+    const juce::String tag = pendingTag_;
+    if (tag.isEmpty()) {
+        error = "No version chosen.";
+        return false;
+    }
+
+    auto manifest = install::fetchManifestForTag(tag, error);
+    if (!manifest.valid) return false;
+
+    availableCode_ = manifest.versionCode;
+    assetFile_ = manifest.assetFile;
+    assetSha_ = manifest.assetSha;
+    assetSize_ = manifest.assetSize;
+    {
+        const juce::ScopedLock sl(lock_);
+        status_.availableVersion = manifest.versionName;
+        status_.notes = manifest.notes;
+        status_.sizeBytes = manifest.assetSize;
+    }
+
+    return performInstall(install::assetUrlForTag(tag, assetFile_), error);
+}
+
+bool PluginUpdater::performInstall(const juce::String& url, juce::String& error) {
     const auto temp = juce::File::getSpecialLocation(juce::File::tempDirectory)
                           .getChildFile("harmonizer-update");
     temp.createDirectory();
     const auto archive = temp.getChildFile(assetFile_);
 
-    if (!install::download(install::assetUrl(assetFile_), archive, assetSize_,
+    if (!install::download(url, archive, assetSize_,
                            [this](double p) { setProgress(p); },
                            [this] { return threadShouldExit(); }, error)) {
         return false;

@@ -65,6 +65,23 @@ const char* const HarmonizerAudioProcessor::ParamId::jazzStyle[jazz::kStyleCount
     "jazzStyleCluster"
 };
 
+const juce::StringArray HarmonizerAudioProcessor::kJazzCustomTypeNames {
+    "Maj7", "Dom7", "Dom7 alt", "Min7", "Min7b5", "Dim7"
+};
+
+const char* const HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[12] = {
+    "jazzCustomMajorType0",  "jazzCustomMajorType1",  "jazzCustomMajorType2",
+    "jazzCustomMajorType3",  "jazzCustomMajorType4",  "jazzCustomMajorType5",
+    "jazzCustomMajorType6",  "jazzCustomMajorType7",  "jazzCustomMajorType8",
+    "jazzCustomMajorType9",  "jazzCustomMajorType10", "jazzCustomMajorType11",
+};
+const char* const HarmonizerAudioProcessor::ParamId::jazzCustomMinorType[12] = {
+    "jazzCustomMinorType0",  "jazzCustomMinorType1",  "jazzCustomMinorType2",
+    "jazzCustomMinorType3",  "jazzCustomMinorType4",  "jazzCustomMinorType5",
+    "jazzCustomMinorType6",  "jazzCustomMinorType7",  "jazzCustomMinorType8",
+    "jazzCustomMinorType9",  "jazzCustomMinorType10", "jazzCustomMinorType11",
+};
+
 HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -108,6 +125,14 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzDouble_ = apvts.getRawParameterValue(ParamId::jazzDouble);
     for (int i = 0; i < jazz::kStyleCount; ++i) {
         pJazzStyle_[i] = apvts.getRawParameterValue(ParamId::jazzStyle[i]);
+    }
+
+    pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
+    pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
+    pJazzCustomUseMinor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMinor);
+    for (int i = 0; i < 12; ++i) {
+        pJazzCustomMajorType_[i] = apvts.getRawParameterValue(ParamId::jazzCustomMajorType[i]);
+        pJazzCustomMinorType_[i] = apvts.getRawParameterValue(ParamId::jazzCustomMinorType[i]);
     }
     for (auto& n : jvNotes_) n.store(-1);
 
@@ -226,6 +251,38 @@ HarmonizerAudioProcessor::createLayout() {
             "Voicing: " + kJazzStyleNames[i], false));
     }
 
+    // --- Jazz custom chord dictionary ---------------------------------------
+    // A user-built alternative to the dictionary above: pick the chord type
+    // for each of the twelve scale degrees yourself. It is always rooted on
+    // the note you play, which is what keeps the played note a tone of the
+    // chord without the editor having to enforce anything. Off by default, so
+    // it changes nothing until it is deliberately turned on; turning it back
+    // off (or leaving both context toggles off) is how you get back to the
+    // dictionary jazz mode always had.
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzCustomOn, 1}, "Use Custom Dictionary", false));
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzCustomUseMajor, 1}, "Custom Dictionary For Major", false));
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzCustomUseMinor, 1}, "Custom Dictionary For Minor", false));
+
+    // Seeded from the built-in dictionary's chord qualities, so turning this
+    // on starts from a chord you already know on every degree -- each now
+    // rooted on its own degree instead -- rather than Imaj7 everywhere.
+    constexpr int kDefaultMajorType[12] = {0, 1, 3, 5, 0, 0, 1, 1, 0, 3, 1, 1};
+    constexpr int kDefaultMinorType[12] = {3, 0, 4, 0, 1, 3, 4, 2, 0, 1, 1, 2};
+
+    for (int i = 0; i < 12; ++i) {
+        layout.add(std::make_unique<AudioParameterChoice>(
+            ParameterID{ParamId::jazzCustomMajorType[i], 1},
+            "Custom Major " + juce::String(i) + " Type", kJazzCustomTypeNames,
+            kDefaultMajorType[i]));
+        layout.add(std::make_unique<AudioParameterChoice>(
+            ParameterID{ParamId::jazzCustomMinorType[i], 1},
+            "Custom Minor " + juce::String(i) + " Type", kJazzCustomTypeNames,
+            kDefaultMinorType[i]));
+    }
+
     return layout;
 }
 
@@ -244,6 +301,18 @@ jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
     s.doubleMelody = pJazzDouble_->load() > 0.5f;
     for (int i = 0; i < jazz::kStyleCount; ++i) {
         s.styles[i] = pJazzStyle_[i]->load() > 0.5f;
+    }
+
+    s.useCustomDictionary = pJazzCustomOn_->load() > 0.5f;
+    s.customDict.useMajor = pJazzCustomUseMajor_->load() > 0.5f;
+    s.customDict.useMinor = pJazzCustomUseMinor_->load() > 0.5f;
+    for (int i = 0; i < 12; ++i) {
+        s.customDict.major[i].type = static_cast<jazz::ChordType>(juce::jlimit(
+            0, static_cast<int>(jazz::ChordType::Count) - 1,
+            static_cast<int>(std::lround(pJazzCustomMajorType_[i]->load()))));
+        s.customDict.minor[i].type = static_cast<jazz::ChordType>(juce::jlimit(
+            0, static_cast<int>(jazz::ChordType::Count) - 1,
+            static_cast<int>(std::lround(pJazzCustomMinorType_[i]->load()))));
     }
     return s;
 }
@@ -591,6 +660,18 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     }
     mix(styleBits);
 
+    // A custom dictionary edited while a note is held has to revoice too, not
+    // just the next new note.
+    mix(static_cast<uint64_t>(settings.useCustomDictionary) |
+        (static_cast<uint64_t>(settings.customDict.useMajor) << 1) |
+        (static_cast<uint64_t>(settings.customDict.useMinor) << 2));
+    if (settings.useCustomDictionary) {
+        for (int i = 0; i < 12; ++i) {
+            mix(static_cast<uint64_t>(settings.customDict.major[i].type));
+            mix(static_cast<uint64_t>(settings.customDict.minor[i].type));
+        }
+    }
+
     if (hash == jazzInputHash_) return;
     jazzInputHash_ = hash;
 
@@ -636,6 +717,96 @@ void HarmonizerAudioProcessor::handleAsyncUpdate() {
         setLatencySamples(latency);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Custom jazz dictionary presets. The host session already keeps the current
+// custom dictionary via ordinary plugin state -- it is APVTS parameters like
+// everything else -- so this is a separate, named library of them on disk,
+// letting one built for a project be reused in another. Message thread only.
+// ---------------------------------------------------------------------------
+
+void HarmonizerAudioProcessor::setParamValue(const char* id, float rawValue) {
+    if (auto* p = apvts.getParameter(id)) {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost(p->convertTo0to1(rawValue));
+        p->endChangeGesture();
+    }
+}
+
+juce::File HarmonizerAudioProcessor::jazzDictionaryPresetDirectory() {
+    auto dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                   .getChildFile("Harmonizer")
+                   .getChildFile("JazzDictionaryPresets");
+    dir.createDirectory();
+    return dir;
+}
+
+namespace {
+juce::File jazzPresetFile(const juce::String& name) {
+    return HarmonizerAudioProcessor::jazzDictionaryPresetDirectory().getChildFile(
+        juce::File::createLegalFileName(name.trim()) + ".xml");
+}
+}  // namespace
+
+juce::StringArray HarmonizerAudioProcessor::jazzDictionaryPresetNames() const {
+    juce::StringArray names;
+    for (const auto& f : jazzDictionaryPresetDirectory().findChildFiles(
+             juce::File::findFiles, false, "*.xml")) {
+        names.add(f.getFileNameWithoutExtension());
+    }
+    names.sort(true);
+    return names;
+}
+
+bool HarmonizerAudioProcessor::saveJazzDictionaryPreset(const juce::String& name) const {
+    if (name.trim().isEmpty()) return false;
+
+    juce::XmlElement root("HarmonizerJazzDictionary");
+    root.setAttribute("useMajor", pJazzCustomUseMajor_->load() > 0.5f);
+    root.setAttribute("useMinor", pJazzCustomUseMinor_->load() > 0.5f);
+    for (int i = 0; i < 12; ++i) {
+        auto* major = root.createNewChildElement("Major");
+        major->setAttribute("degree", i);
+        major->setAttribute("type", static_cast<int>(std::lround(pJazzCustomMajorType_[i]->load())));
+
+        auto* minor = root.createNewChildElement("Minor");
+        minor->setAttribute("degree", i);
+        minor->setAttribute("type", static_cast<int>(std::lround(pJazzCustomMinorType_[i]->load())));
+    }
+    return root.writeTo(jazzPresetFile(name));
+}
+
+bool HarmonizerAudioProcessor::loadJazzDictionaryPreset(const juce::String& name) {
+    auto xml = juce::XmlDocument::parse(jazzPresetFile(name));
+    if (xml == nullptr || !xml->hasTagName("HarmonizerJazzDictionary")) return false;
+
+    setParamValue(ParamId::jazzCustomUseMajor, xml->getBoolAttribute("useMajor", false) ? 1.0f : 0.0f);
+    setParamValue(ParamId::jazzCustomUseMinor, xml->getBoolAttribute("useMinor", false) ? 1.0f : 0.0f);
+
+    for (auto* child : xml->getChildIterator()) {
+        const int degree = child->getIntAttribute("degree", -1);
+        if (degree < 0 || degree > 11) continue;
+        const float type = static_cast<float>(juce::jlimit(
+            0, static_cast<int>(jazz::ChordType::Count) - 1, child->getIntAttribute("type", 0)));
+
+        if (child->hasTagName("Major")) {
+            setParamValue(ParamId::jazzCustomMajorType[degree], type);
+        } else if (child->hasTagName("Minor")) {
+            setParamValue(ParamId::jazzCustomMinorType[degree], type);
+        }
+    }
+
+    // Loading a preset means "use this now" -- it would be a strange button to
+    // press and have nothing change.
+    setParamValue(ParamId::jazzCustomOn, 1.0f);
+    return true;
+}
+
+bool HarmonizerAudioProcessor::deleteJazzDictionaryPreset(const juce::String& name) const {
+    return jazzPresetFile(name).deleteFile();
+}
+
+// ---------------------------------------------------------------------------
 
 void HarmonizerAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
     if (auto xml = apvts.copyState().createXml()) {

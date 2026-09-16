@@ -33,6 +33,13 @@ public:
         juce::String notes;
         double progress = 0.0;
         juce::int64 sizeBytes = 0;
+
+        // Version history, for rolling back. historyLoaded distinguishes "not
+        // asked for yet" from "asked for, and it came back empty or failed" --
+        // both otherwise look like an empty array.
+        bool historyLoaded = false;
+        juce::String historyError;
+        juce::Array<harmonizer::install::VersionEntry> history;
     };
 
     PluginUpdater();
@@ -40,6 +47,17 @@ public:
 
     void checkForUpdates();
     void downloadAndInstall();
+
+    /** Every build still available, newest first -- background, like the rest. */
+    void loadVersionHistory();
+
+    /**
+     * Installs a specific past build in place of whatever is running, using the
+     * same download/verify/extract pipeline as an ordinary update -- just
+     * pointed at that build's own permanent release instead of "latest".
+     */
+    void installVersion(const juce::String& tag);
+
     void reset();
 
     Status status() const;
@@ -54,11 +72,14 @@ public:
     static void cleanUpPreviousUpdate();
 
 private:
-    enum class Job { None, Check, Install };
+    enum class Job { None, Check, Install, History, InstallVersion };
 
     void run() override;
     bool doCheck(juce::String& error);
     bool doInstall(juce::String& error);
+    bool doLoadHistory();
+    bool doInstallVersion(juce::String& error);
+    bool performInstall(const juce::String& url, juce::String& error);
 
     void setStage(Stage stage, const juce::String& message);
     void setProgress(double progress);
@@ -71,6 +92,7 @@ private:
     juce::String assetFile_;
     juce::String assetSha_;
     juce::int64 assetSize_ = 0;
+    juce::String pendingTag_;   // which past build installVersion() is fetching
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginUpdater)
 };
