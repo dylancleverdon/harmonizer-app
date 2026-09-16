@@ -323,12 +323,36 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
 
     // Guard the range: a window narrower than an octave has nowhere to put a
     // chord, and the folding below would spin.
-    const int lo = clampi(s.rangeLow, 0, 115);
-    const int hi = clampi(s.rangeHigh < lo + 12 ? lo + 12 : s.rangeHigh, lo + 12, 127);
+    const int askedLow = clampi(s.rangeLow, 0, 115);
+    const int askedHigh = clampi(s.rangeHigh < askedLow + 12 ? askedLow + 12 : s.rangeHigh,
+                                 askedLow + 12, 127);
     const int maxNotes = clampi(s.maxNotes, 1, kMaxVoicingNotes);
 
+    // Intersect the range with what the engine can actually reach from the note
+    // being played. Without this a chord voiced more than two octaves away comes
+    // out at the engine's limit -- an audibly wrong note, while the panel names
+    // the one that was intended.
+    const int reachLow = clampi(melodyNote - kEngineReachSemitones, 0, 127);
+    const int reachHigh = clampi(melodyNote + kEngineReachSemitones, 0, 127);
+
+    int lo = askedLow;
+    int hi = askedHigh;
+    bool limited = false;
+    if (lo < reachLow) { lo = reachLow; limited = true; }
+    if (hi > reachHigh) { hi = reachHigh; limited = true; }
+
+    // Range and reach may not overlap at all -- a low range under a high note.
+    // Staying in tune wins: a note outside the asked-for window is a preference
+    // overridden, a note past the engine's reach is simply the wrong pitch.
+    if (hi < lo + 12) {
+        lo = clampi(lo, reachLow, (reachHigh - 12 > reachLow) ? reachHigh - 12 : reachLow);
+        hi = lo + 12;
+        if (hi > reachHigh) { hi = reachHigh; lo = hi - 12; }
+        limited = true;
+    }
+
     // Where the voicing wants to sit. The octave switch moves this target; the
-    // range is a hard wall, so a tight range is free to overrule it.
+    // window is a hard wall, so a tight range is free to overrule it.
     float target = 0.5f * static_cast<float>(lo + hi) + 12.0f * static_cast<float>(s.octaveShift);
     target = static_cast<float>(clampi(static_cast<int>(target), lo + 6, hi - 6));
 
@@ -512,6 +536,9 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     out.style = bestStyle;
     out.melodyNote = melodyNote;
     out.melodyDegree = degreeOfPitchClass(type, pitchClass(melodyNote - rootPc));
+    out.rangeLimited = limited;
+    out.windowLow = lo;
+    out.windowHigh = hi;
 
     prevCount_ = bestCount;
     for (int i = 0; i < bestCount; ++i) prev_[i] = bestNotes[i];

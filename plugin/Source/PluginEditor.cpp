@@ -574,6 +574,11 @@ public:
         rangeRow_->setValue(flatNoteName(settings.rangeLow) + " to " +
                             flatNoteName(settings.rangeHigh) + "  (" +
                             juce::String(settings.rangeHigh - settings.rangeLow) + " semitones)");
+        rangeRow_->setLabel(view.rangeLimited ? "Using instead" : "Chords live between");
+        if (view.rangeLimited && view.sounding) {
+            rangeRow_->setValue(flatNoteName(view.windowLow) + " to " +
+                                flatNoteName(view.windowHigh) + "  (held near your note)");
+        }
         smoothRow_->setValue(juce::String(juce::roundToInt(settings.smoothness * 100.0f)) + " %");
 
         bool anyStyle = false;
@@ -585,17 +590,23 @@ public:
                        "from the chord before it wins.",
             anyStyle ? look::muted : look::accent);
 
-        // A range narrower than an octave has nowhere to put a chord; the voicer
-        // widens it rather than failing, so say so here.
-        rangeNote_.setText(
-            settings.rangeHigh - settings.rangeLow < 12
-                ? juce::String("That range is narrower than an octave, so an octave is used. "
-                               "Widen it to get control back.")
-                : juce::String("Nothing sounds outside this window. Widening it lets each chord "
+        // Two ways the range does not get used as written, both worth saying out
+        // loud rather than leaving the player to wonder why it sounds wrong.
+        if (settings.rangeHigh - settings.rangeLow < 12) {
+            rangeNote_.setText("That range is narrower than an octave, so an octave is used. "
+                               "Widen it to get control back.", look::warn);
+        } else if (view.rangeLimited && view.sounding) {
+            rangeNote_.setText("This range is more than two octaves from the note you are "
+                               "playing, which is further than the engine can shift a voice. "
+                               "The chord is being held closer to you so that it stays in tune. "
+                               "Move the range nearer your own register to use it as written.",
+                               look::warn);
+        } else {
+            rangeNote_.setText("Nothing sounds outside this window. Widening it lets each chord "
                                "find its own best register; tightening it forces successive "
                                "chords to share registers, which is the bluntest way to smooth "
-                               "the voice leading."),
-            settings.rangeHigh - settings.rangeLow < 12 ? look::warn : look::muted);
+                               "the voice leading.", look::muted);
+        }
     }
 
 private:

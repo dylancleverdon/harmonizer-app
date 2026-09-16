@@ -405,6 +405,26 @@ static void testJazzChordMode() {
         check(inside, juce::String("a C4-C5 range keeps every voice inside it: ") + notes);
     }
 
+    // A range parked far from what the player is playing cannot be honoured:
+    // the engine will not shift a voice more than two octaves, so a chord voiced
+    // out there would sound at that limit instead. The chord is brought within
+    // reach and the panel reports it, rather than naming notes nobody hears.
+    {
+        const auto r = run(true, true, 24, 36, 60, 1.5);   // C1-C2, under an A3
+        const auto& v = r.view;
+        bool reachable = v.noteCount > 0;
+        int worst = 0;
+        for (int i = 0; i < v.noteCount; ++i) {
+            const int d = std::abs(v.notes[i] - v.melodyNote);
+            worst = juce::jmax(worst, d);
+            reachable &= d <= jazz::kEngineReachSemitones;
+        }
+        check(reachable && v.rangeLimited,
+              juce::String("a range two octaves below the played note is pulled into reach "
+                           "(worst voice ") + juce::String(worst) + " semitones away, reported as " +
+                  (v.rangeLimited ? "limited)" : "NOT limited)"));
+    }
+
     // Switching the mode off mid-session hands the held key back to the engine
     // rather than leaving it silent until the player lifts and presses again.
     {

@@ -91,12 +91,14 @@ the two tones that say least about the chord.
 
 ### Where the chord sits
 
-* **Range** — a low and a high note. Nothing ever sounds outside it. Widening it
+* **Range** — a low and a high note. Nothing sounds outside it, with the one
+  exception at the end of this bullet. Widening it
   lets each chord find its own best register; tightening it forces successive
   chords to share registers, which is the bluntest way there is to smooth the
-  voice leading. Keep it near your own register: the engine will not shift a
-  voice more than two octaves from the note you are playing, so a range parked
-  far away from you gets pinned at that limit.
+  voice leading. If you park it more than two octaves from what you are actually
+  playing, it cannot be used as written — the engine will not shift a voice that
+  far — so the chord is held closer to you instead, in tune, and the panel says
+  it has done so.
 * **Octave** — moves the register the voicer aims for by a whole octave, inside
   whatever the range allows.
 * **Inversion** — the finer control between those steps. It rotates the voicing

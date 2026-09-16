@@ -22,6 +22,13 @@ namespace jazz {
 // already covering never needs more than this.
 inline constexpr int kMaxVoicingNotes = 8;
 
+// The engine shifts a voice at most two octaves away from the pitch it is given
+// (its ratio is clamped to 0.25..4). A note voiced further out than this would
+// sound at that limit instead of where it was placed -- the wrong pitch, under a
+// display naming a note nobody is hearing. So it is a bound on the voicing, not
+// a detail of the engine.
+inline constexpr int kEngineReachSemitones = 24;
+
 enum class ChordType {
     Maj7 = 0,   // 1 3 5 7        -- extensions 9, #11, 13
     Dom7,       // 1 3 5 b7       -- extensions 9, #11, 13
@@ -103,6 +110,13 @@ struct Voicing {
     Style style = Style::Close;
     int  melodyNote = -1;        // what the player is actually sounding
     int  melodyDegree = 1;       // which chord tone that turns out to be
+
+    // The range asked for was further from the played note than the engine can
+    // shift, so the chord was brought closer to stay in tune. The panel says so
+    // rather than quietly disobeying the range.
+    bool rangeLimited = false;
+    int  windowLow = 0;          // the window actually voiced into
+    int  windowHigh = 127;
 };
 
 /**

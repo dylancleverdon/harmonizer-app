@@ -223,7 +223,8 @@ int main() {
                "the dominant's 11th is sharp: %s", symbol);
     }
 
-    // --- Nothing may sound outside the range, ever.
+    // --- Nothing may sound outside the range, unless honouring it would put a
+    // voice further away than the engine can shift -- which is reported.
     std::printf("\n-- The range is a hard wall --\n");
     {
         const struct { int low, high; } windows[] = {
@@ -246,15 +247,88 @@ int main() {
                     for (int melody = 55; melody <= 84; ++melody) {
                         if (!voicer.update(keys, 1, melody, s, v)) continue;
                         for (int i = 0; i < v.count; ++i) {
-                            allInside &= v.notes[i] >= w.low && v.notes[i] <= w.high;
+                            // Always inside the window the voicing says it used,
+                            // and inside the asked-for range whenever that window
+                            // was not pulled in to stay within the engine's reach.
+                            allInside &= v.notes[i] >= v.windowLow && v.notes[i] <= v.windowHigh;
+                            if (!v.rangeLimited) {
+                                allInside &= v.notes[i] >= w.low && v.notes[i] <= w.high;
+                            }
                             if (i > 0) noDuplicates &= v.notes[i] != v.notes[i - 1];
                         }
                     }
                 }
             }
         }
-        check(allInside, "every note of every voicing lands inside the range");
+        check(allInside, "every note lands inside the range, or inside the reduced window "
+                         "the voicing reports when the range was out of the engine's reach");
         check(noDuplicates, "no voicing sounds the same note twice");
+    }
+
+    // --- The engine can only shift a voice so far. A note voiced past that
+    // would sound at the limit instead, so the voicer must not place one there.
+    std::printf("\n-- Nothing is voiced further than the engine can shift it --\n");
+    {
+        int beyond = 0;
+        int worst = 0;
+        int limitedCases = 0;
+        const struct { int low, high; } windows[] = {
+            {50, 79},   // the default
+            {36, 96},   // wide
+            {50, 62},   // low and narrow, under a high note
+            {72, 84},   // high and narrow, over a low note
+        };
+        for (const auto& w : windows) {
+            for (int octave = -2; octave <= 2; ++octave) {
+                for (int melody = 40; melody <= 96; ++melody) {
+                    auto s = defaults();
+                    s.rangeLow = w.low;
+                    s.rangeHigh = w.high;
+                    s.octaveShift = octave;
+                    s.ninth = s.thirteenth = true;
+                    for (int keyPc = 0; keyPc < 12; ++keyPc) {
+                        const int keys[2] = {48 + keyPc, 48 + keyPc + 7};
+                        for (int minor = 0; minor < 2; ++minor) {
+                            jazz::Voicer voicer;
+                            jazz::Voicing v;
+                            if (!voicer.update(keys, minor ? 2 : 1, melody, s, v)) continue;
+                            if (v.rangeLimited) ++limitedCases;
+                            for (int i = 0; i < v.count; ++i) {
+                                const int d = std::abs(v.notes[i] - melody);
+                                if (d > jazz::kEngineReachSemitones) {
+                                    ++beyond;
+                                    worst = std::max(worst, d);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        checkf(beyond == 0, "every voice stays within two octaves of the played note "
+                            "(%d beyond, worst %d semitones)", beyond, worst);
+        checkf(limitedCases > 0,
+               "and the voicing reports when the range had to give way for it (%d cases)",
+               limitedCases);
+
+        // Where range and reach do overlap, the range still wins outright.
+        auto s = defaults();
+        s.rangeLow = 55;
+        s.rangeHigh = 74;
+        bool inside = true;
+        bool everLimited = false;
+        for (int melody = 60; melody <= 72; ++melody) {
+            const int keys[] = {60};
+            jazz::Voicer voicer;
+            jazz::Voicing v;
+            if (!voicer.update(keys, 1, melody, s, v)) continue;
+            everLimited |= v.rangeLimited;
+            for (int i = 0; i < v.count; ++i) {
+                inside &= v.notes[i] >= 55 && v.notes[i] <= 74;
+            }
+        }
+        check(inside && !everLimited,
+              "a range within reach of the played note is used untouched");
     }
 
     // --- Octave and inversion switches.
@@ -277,7 +351,11 @@ int main() {
             for (int i = 0; i < v.count; ++i) sum += static_cast<float>(v.notes[i]);
             centre[octave + 2] = sum / static_cast<float>(v.count);
         }
-        checkf(centre[0] < centre[2] - 18.0f && centre[4] > centre[2] + 18.0f,
+        // How far the switch can carry the chord is bounded by how far the
+        // engine can shift a voice from the played note, so two octaves of travel
+        // either way is not reachable at the extremes -- an octave-scale move in
+        // the right direction is what this is asserting.
+        checkf(centre[0] < centre[2] - 12.0f && centre[4] > centre[2] + 12.0f,
                "two octaves down and up move the chord's centre: %.1f / %.1f / %.1f",
                centre[0], centre[2], centre[4]);
 

@@ -94,6 +94,11 @@ public:
         int   heldKeys = 0;
         int   noteCount = 0;
         int   notes[jazz::kMaxVoicingNotes] = {};
+        // The asked-for range was further from the played note than the engine
+        // can shift, so the chord was brought closer to stay in tune.
+        bool  rangeLimited = false;
+        int   windowLow = 0;
+        int   windowHigh = 127;
         const char* roman = "";
     };
     JazzView jazzView() const;
@@ -208,7 +213,8 @@ private:
     std::atomic<bool>  jvSounding_{false};
     std::atomic<int>   jvKeyCentre_{-1}, jvDegree_{0}, jvRoot_{-1}, jvType_{0}, jvStyle_{0};
     std::atomic<int>   jvMelodyNote_{-1}, jvMelodyDegree_{1}, jvCount_{0}, jvHeldKeys_{0};
-    std::atomic<bool>  jvMinor_{false};
+    std::atomic<bool>  jvMinor_{false}, jvLimited_{false};
+    std::atomic<int>   jvWindowLow_{0}, jvWindowHigh_{127};
     std::atomic<float> jvMelodyHz_{0.0f};
     std::atomic<int>   jvNotes_[jazz::kMaxVoicingNotes];
     std::atomic<const char*> jvRoman_{""};

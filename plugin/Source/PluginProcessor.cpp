@@ -503,6 +503,9 @@ void HarmonizerAudioProcessor::jazzPublish(const jazz::Voicing& v, float melodyH
     jvMelodyHz_.store(melodyHz);
     jvHeldKeys_.store(heldKeys);
     jvRoman_.store(v.roman);
+    jvLimited_.store(v.rangeLimited);
+    jvWindowLow_.store(v.windowLow);
+    jvWindowHigh_.store(v.windowHigh);
     for (int i = 0; i < jazz::kMaxVoicingNotes; ++i) {
         jvNotes_[i].store(i < v.count ? v.notes[i] : -1);
     }
@@ -618,6 +621,9 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
     v.noteCount = juce::jlimit(0, jazz::kMaxVoicingNotes, jvCount_.load());
     for (int i = 0; i < jazz::kMaxVoicingNotes; ++i) v.notes[i] = jvNotes_[i].load();
     v.roman = jvRoman_.load();
+    v.rangeLimited = jvLimited_.load();
+    v.windowLow = jvWindowLow_.load();
+    v.windowHigh = jvWindowHigh_.load();
     return v;
 }
 
