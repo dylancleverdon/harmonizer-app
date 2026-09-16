@@ -8,6 +8,7 @@
 // and asking for smoother voice leading actually reduces how far the voices
 // travel.
 
+#include "JazzMidiImport.h"
 #include "JazzVoicer.h"
 
 #include <algorithm>
@@ -562,7 +563,9 @@ int main() {
     // --- A custom dictionary is a per-context override, not a separate mode:
     // off (the default) has to leave the built-in dictionary untouched, and
     // leaving one context off has to leave that context's built-in chords
-    // untouched too.
+    // untouched too. A custom entry is an explicit voicing -- semitone
+    // offsets above the root -- rather than a chord type, so it can carry
+    // exactly what a keyboard editor, a recording, or a MIDI import gave it.
     std::printf("\n-- Custom chord dictionary --\n");
     {
         auto s = defaults();
@@ -572,44 +575,60 @@ int main() {
         jazz::Voicer plain;
         jazz::Voicing before;
         check(plain.update(keys, 1, melody, s, before), "built-in dictionary voices D over C");
-        checkf(before.chordRootPc == 2 && std::string(before.roman) == "iim7",
+        checkf(before.chordRootPc == 2 && std::string(before.roman) == "iim7" && !before.customVoicing,
                "before any custom dictionary exists, D over C is %s%s",
                jazz::pitchClassName(before.chordRootPc), before.roman);
 
         // A dictionary that has been filled in but not switched on changes
         // nothing at all -- that is how you get back to how it always was.
-        for (auto& e : s.customDict.major) e.type = jazz::ChordType::Dom7;
+        for (auto& e : s.customDict.major) { e.offsets[0] = 4; e.offsets[1] = 7; e.offsets[2] = 10; e.count = 3; }
         s.customDict.useMajor = true;
         jazz::Voicer stillOff;
         jazz::Voicing offResult;
         stillOff.update(keys, 1, melody, s, offResult);
         checkf(offResult.chordRootPc == before.chordRootPc &&
-                   std::string(offResult.roman) == before.roman,
+                   std::string(offResult.roman) == before.roman && !offResult.customVoicing,
                "a filled-in dictionary that is not switched on changes nothing (%s%s)",
                jazz::pitchClassName(offResult.chordRootPc), offResult.roman);
 
         // Switched on, it overrides the degree it was built for -- always
-        // rooted on the note played, D, rather than the built-in's root.
+        // rooted on the note played, D, rather than the built-in's root --
+        // and plays exactly the tones the entry was given (a dominant-quality
+        // voicing here: major third, fifth, minor seventh).
         s.useCustomDictionary = true;
         jazz::Voicer custom;
         jazz::Voicing after;
         check(custom.update(keys, 1, melody, s, after), "the custom entry voices too");
-        checkf(after.chordRootPc == 2 && after.type == jazz::ChordType::Dom7,
-               "custom major degree 2 -> root %s, %s", jazz::pitchClassName(after.chordRootPc),
-               jazz::styleName(after.style));
-        checkf(std::string(after.roman) == "II7", "custom entry is named like the built-in ones: %s",
-               after.roman);
+        checkf(after.chordRootPc == 2 && after.customVoicing,
+               "custom major degree 2 -> root %s, custom voicing used",
+               jazz::pitchClassName(after.chordRootPc));
+        checkf(std::string(after.roman) == "II",
+               "a custom entry's roman numeral is the bare scale degree: %s", after.roman);
+
+        bool haveThird = false, haveFifth = false, haveSeventh = false;
+        for (int i = 0; i < after.count; ++i) {
+            switch (pitchClass(after.notes[i] - after.chordRootPc)) {
+                case 4:  haveThird = true; break;
+                case 7:  haveFifth = true; break;
+                case 10: haveSeventh = true; break;
+                default: break;
+            }
+        }
+        check(haveThird && haveFifth && haveSeventh,
+              "the voicing actually contains the tones the custom entry was given");
 
         // The played note is still a tone of whatever chord the custom
-        // dictionary names -- the one contract that never gets to break.
-        const auto customPcs = chordPitchClasses(after, s);
-        check(contains(customPcs, pitchClass(melody)),
-              "the played note is still a tone of the custom chord");
+        // dictionary names -- the one contract that never gets to break. It
+        // is always the chord's root (offset 0), whether or not that root
+        // itself ends up sounding.
+        checkf(pitchClass(after.chordRootPc) == pitchClass(melody),
+               "the played note is still the root of the custom chord (root %s, played %s)",
+               jazz::pitchClassName(after.chordRootPc), jazz::pitchClassName(pitchClass(melody)));
 
-        // That holds for every degree and every chord type a custom entry
-        // could be given, in both major and minor -- not just the one case
-        // above. Since a custom entry is always rooted on the played note,
-        // this is really checking that the rooting rule itself is applied
+        // That holds for every degree and every voicing a custom entry could
+        // be given, in both major and minor -- not just the one case above.
+        // Since a custom entry is always rooted on the played note, this is
+        // really checking that the rooting rule itself is applied
         // consistently, in every key.
         {
             int misses = 0;
@@ -621,7 +640,9 @@ int main() {
                     for (int degree = 0; degree < 12; ++degree) {
                         const auto t = static_cast<jazz::ChordType>(
                             degree % static_cast<int>(jazz::ChordType::Count));
-                        (minorCtx ? cs.customDict.minor[degree] : cs.customDict.major[degree]).type = t;
+                        jazz::CustomEntry entry;
+                        entry.count = jazz::chordTypeTones(t, entry.offsets, 3);
+                        (minorCtx ? cs.customDict.minor[degree] : cs.customDict.major[degree]) = entry;
                     }
                     const int ks[2] = {48 + keyPc, 48 + keyPc + 7};
                     for (int degree = 0; degree < 12; ++degree) {
@@ -629,7 +650,8 @@ int main() {
                         jazz::Voicing out2;
                         const int mel = 60 + keyPc + degree;
                         if (!v2.update(ks, minorCtx ? 2 : 1, mel, cs, out2)) { ++misses; continue; }
-                        if (!contains(chordPitchClasses(out2, cs), pitchClass(mel))) ++misses;
+                        if (!out2.customVoicing) { ++misses; continue; }
+                        if (pitchClass(out2.chordRootPc) != pitchClass(mel)) ++misses;
                     }
                 }
             }
@@ -638,13 +660,29 @@ int main() {
                    "(%d misses)", misses);
         }
 
+        // A degree left blank (count == 0) falls back to the built-in
+        // dictionary for just that one degree, rather than going silent --
+        // the per-context fallback applied per degree too.
+        {
+            auto blankS = defaults();
+            blankS.useCustomDictionary = true;
+            blankS.customDict.useMajor = true;   // every entry defaults to count == 0
+            jazz::Voicer blankVoicer;
+            jazz::Voicing blankResult;
+            blankVoicer.update(keys, 1, melody, blankS, blankResult);
+            checkf(blankResult.chordRootPc == before.chordRootPc &&
+                       std::string(blankResult.roman) == before.roman && !blankResult.customVoicing,
+                   "a blank custom entry falls back to the built-in chord for its degree (%s%s)",
+                   jazz::pitchClassName(blankResult.chordRootPc), blankResult.roman);
+        }
+
         // Minor was never turned on, so two keys still get the built-in minor
         // dictionary rather than silently reusing the major table.
         const int minorKeys[] = {60, 67};   // C, G -> C minor
         jazz::Voicer minorVoicer;
         jazz::Voicing minorResult;
         minorVoicer.update(minorKeys, 2, 62, s, minorResult);   // D over Cm -> iim7b5 built in
-        checkf(minorResult.type == jazz::ChordType::Min7b5,
+        checkf(minorResult.type == jazz::ChordType::Min7b5 && !minorResult.customVoicing,
                "minor left off still uses the built-in minor dictionary (got %s)",
                jazz::styleName(minorResult.style));
 
@@ -655,9 +693,79 @@ int main() {
         jazz::Voicing restoredResult;
         restored.update(keys, 1, melody, s, restoredResult);
         checkf(restoredResult.chordRootPc == before.chordRootPc &&
-                   std::string(restoredResult.roman) == before.roman,
+                   std::string(restoredResult.roman) == before.roman && !restoredResult.customVoicing,
                "switching the dictionary back off restores %s (got %s%s)", before.roman,
                jazz::pitchClassName(restoredResult.chordRootPc), restoredResult.roman);
+    }
+
+    // --- MIDI import: finding a key centre and the chords played over it
+    // from notes alone, with no dictionary to consult -- the reverse of
+    // everything above. A synthetic performance with a known answer: four
+    // bars of Cmaj7/Dm7 in C major, then four bars of Gmaj7/Am7 in G major
+    // (ii-I in G is the same shape as ii-I in C, shifted -- a deliberate
+    // check that the two keys reinforce the same degree rather than
+    // splitting it).
+    std::printf("\n-- MIDI import --\n");
+    {
+        const int tpq = 480;
+        const int bar = tpq * 4;
+        std::vector<jazz::ImportNote> notes;
+        const auto addChord = [&](long long startBar, std::initializer_list<int> pitches) {
+            for (int p : pitches) notes.push_back({startBar * bar, bar, p});
+        };
+        addChord(0, {60, 64, 67, 71});   // Cmaj7
+        addChord(1, {62, 65, 69, 72});   // Dm7
+        addChord(2, {60, 64, 67, 71});   // Cmaj7
+        addChord(3, {62, 65, 69, 72});   // Dm7
+        addChord(4, {67, 71, 74, 78});   // Gmaj7
+        addChord(5, {69, 72, 76, 79});   // Am7
+        addChord(6, {67, 71, 74, 78});   // Gmaj7
+        addChord(7, {69, 72, 76, 79});   // Am7
+
+        const auto result =
+            jazz::analyzeForCustomDictionary(notes.data(), static_cast<int>(notes.size()), tpq);
+
+        checkf(result.keySegments == 2, "found two key centres, C major then G major (got %d)",
+               result.keySegments);
+
+        const auto& tonic = result.dict.major[0];   // I: root position, maj7 tones
+        bool haveThird = false, haveFifth = false, haveSeventh = false;
+        for (int i = 0; i < tonic.count; ++i) {
+            switch (tonic.offsets[i]) {
+                case 4:  haveThird = true; break;
+                case 7:  haveFifth = true; break;
+                case 11: haveSeventh = true; break;
+                default: break;
+            }
+        }
+        checkf(tonic.count == 3 && haveThird && haveFifth && haveSeventh,
+               "the tonic chord (Cmaj7 and Gmaj7, both degree 1) came back as a maj7 voicing "
+               "(%d notes)", tonic.count);
+
+        const auto& two = result.dict.major[2];   // ii: root position, min7 tones
+        bool haveMinorThird = false, haveMinorFifth = false, haveMinorSeventh = false;
+        for (int i = 0; i < two.count; ++i) {
+            switch (two.offsets[i]) {
+                case 3:  haveMinorThird = true; break;
+                case 7:  haveMinorFifth = true; break;
+                case 10: haveMinorSeventh = true; break;
+                default: break;
+            }
+        }
+        checkf(two.count == 3 && haveMinorThird && haveMinorFifth && haveMinorSeventh,
+               "the ii chord (Dm7 and Am7, both degree 2 of their own key) came back as a min7 "
+               "voicing, reinforced by both keys rather than split between them (%d notes)",
+               two.count);
+
+        check(result.chordsAnalyzed > 0, "sampled at least one chord");
+
+        // Nothing at all: no notes, or ticksPerQuarterNote <= 0 (an SMPTE-
+        // timed file, which this does not understand).
+        const auto empty = jazz::analyzeForCustomDictionary(nullptr, 0, tpq);
+        check(empty.keySegments == 0 && empty.chordsAnalyzed == 0, "no notes analyses to nothing");
+        const auto badTiming = jazz::analyzeForCustomDictionary(notes.data(),
+                                                                 static_cast<int>(notes.size()), 0);
+        check(badTiming.keySegments == 0, "an invalid ticks-per-quarter-note analyses to nothing");
     }
 
     std::printf("\n=============================================\n");

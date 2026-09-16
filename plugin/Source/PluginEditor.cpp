@@ -30,10 +30,6 @@ void styleCombo(juce::ComboBox& c) {
     c.setColour(juce::ComboBox::arrowColourId, look::accent);
 }
 
-void fillCombo(juce::ComboBox& box, const juce::StringArray& items) {
-    for (int i = 0; i < items.size(); ++i) box.addItem(items[i], i + 1);
-}
-
 /** "1 (root)", "b2", "2" ... the scale degree a row of the custom dictionary
  *  editor is for -- the note the player has to play to reach that chord. */
 const juce::String& customDegreeLabel(int degree) {
@@ -41,6 +37,21 @@ const juce::String& customDegreeLabel(int degree) {
         "1 (root)", "b2", "2", "b3", "3", "4", "#4", "5", "b6", "6", "b7", "7"
     };
     return labels.getReference(juce::jlimit(0, 11, degree));
+}
+
+/** The same degree, short enough to fit on a small selector button. */
+const juce::String& shortDegreeLabel(int degree) {
+    static const juce::StringArray labels {
+        "1", "b2", "2", "b3", "3", "4", "#4", "5", "b6", "6", "b7", "7"
+    };
+    return labels.getReference(juce::jlimit(0, 11, degree));
+}
+
+void styleSmallButton(juce::TextButton& b) {
+    b.setColour(juce::TextButton::buttonColourId, look::surfaceVariant);
+    b.setColour(juce::TextButton::buttonOnColourId, look::accent);
+    b.setColour(juce::TextButton::textColourOffId, look::text);
+    b.setColour(juce::TextButton::textColourOnId, look::text);
 }
 
 void styleSlider(juce::Slider& s) {
@@ -391,6 +402,11 @@ private:
 class JazzPage final : public Page {
 public:
     explicit JazzPage(HarmonizerAudioProcessor& p) : processor_(p) {
+        // Belt and braces against the plugin window closing while record mode
+        // is on: it lives on the processor, not this page, so it would
+        // otherwise keep swallowing MIDI that should be playing normally,
+        // invisibly, with the one indicator of it turned off.
+        processor_.setJazzCustomRecording(false);
         auto& apvts = processor_.apvts;
         using P = HarmonizerAudioProcessor::ParamId;
         using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -405,6 +421,38 @@ public:
                        "key, and the chord this dictionary keeps for that degree is voiced "
                        "around your note.");
         mode.addRow(intro_, 58);
+
+        transposeLabel_.setText("KEYS TRANSPOSE", look::muted);
+        mode.addRow(transposeLabel_, 14);
+        styleSlider(transposeSlider_);
+        mode.addRow(transposeSlider_, 24);
+        transposeNote_.setText(
+            "Shifts the keys you hold before they name a key centre -- for real, not just the "
+            "label: hold what your instrument's chart calls the tonic and the chord actually "
+            "builds in that key. Set this to your instrument's transposition, e.g. Bb to play "
+            "in concert Bb by holding a written C.");
+        mode.addRow(transposeNote_, 30);
+
+        transposeAudioLabel_.setText("AUDIO IN TRANSPOSE", look::muted);
+        mode.addRow(transposeAudioLabel_, 14);
+        styleSlider(transposeAudioSlider_);
+        mode.addRow(transposeAudioSlider_, 24);
+        transposeAudioNote_.setText(
+            "Display only -- never touches the chord or how it sounds, since the note you're "
+            "playing live is measured from real audio and can't be shifted for real. Just "
+            "renames what the row below prints, so a concert Bb into the input reads as C, "
+            "matching what a Bb instrument's own part would call it. Set this to the live "
+            "instrument's transposition.");
+        mode.addRow(transposeAudioNote_, 30);
+
+        styleToggle(latch_, "Latch key centre");
+        mode.addRow(latch_, 24);
+        latchNote_.setText(
+            "Freezes the key centre against releases: once engaged, only a fresh key press "
+            "changes it, never lifting one. Off, releasing down to one key from a held minor "
+            "chord reads as major the instant you lift a finger -- on, it stays minor until you "
+            "release every key and press a single one again.");
+        mode.addRow(latchNote_, 58);
 
         keyRow_ = std::make_unique<look::StatRow>("Key centre", true);
         playingRow_ = std::make_unique<look::StatRow>("You are playing");
@@ -433,9 +481,14 @@ public:
         tones.addRow(voicesLabel_, 14);
         styleSlider(voicesSlider_);
         tones.addRow(voicesSlider_, 24);
+        styleToggle(voicesAuto_, "Auto -- use exactly as many voices as the chord has");
+        tones.addRow(voicesAuto_, 24);
         voicesNote_.setText("How many notes the chord may sound. Past this the fifth goes first, "
-                            "then the root -- the tones that say least about the chord.");
-        tones.addRow(voicesNote_, 28);
+                            "then the root -- the tones that say least about the chord. Auto skips "
+                            "this cap entirely and plays every tone the chord actually has -- a "
+                            "custom voicing's own note count, or the built-in chord's three plus "
+                            "whichever extensions are switched on.");
+        tones.addRow(voicesNote_, 44);
 
         // --- Register.
         auto& sits = addCard("Where the chord sits");
@@ -482,6 +535,18 @@ public:
                             "chord before it wins, even if that means an odd register.");
         leading.addRow(smoothNote_, 44);
 
+        glideLabel_.setText("GLIDE", look::muted);
+        leading.addRow(glideLabel_, 14);
+        styleSlider(glideSlider_);
+        leading.addRow(glideSlider_, 24);
+        glideNote_.setText(
+            "How long a chord change cross-fades between the tones leaving and the tones "
+            "arriving, instead of the engine's ordinary quick click-avoidance fade. Off is the "
+            "same snap it has always been; raising it trades a little immediacy for a smoother "
+            "hand-off between chords. A tone common to both chords is never touched by this -- it "
+            "was already sustaining through the change.");
+        leading.addRow(glideNote_, 58);
+
         // --- Styles.
         auto& styles = addCard("Voicing style");
         stylesNote_.setText("Choose as many as you like and the best of them for the moment is "
@@ -509,15 +574,22 @@ public:
 
         // --- Custom chord dictionary: a user-built alternative to the one
         // above. It replaces which chord is picked for a degree, nothing else
-        // -- range, voice leading, extensions and style all still apply.
+        // -- range, voice leading and voice count still apply on top of it.
         auto& customCard = addCard("Custom chord dictionary");
         customIntro_.setText(
-            "A dictionary you build yourself, in place of the one above. Pick which chord plays "
-            "on each note of the key -- always rooted on the note you play, so you are always a "
-            "tone of it -- once, and it already covers all twelve keys the same way the built-in "
-            "dictionary does. Range, voice leading, extensions and voicing style all still apply "
-            "on top of it.");
-        customCard.addRow(customIntro_, 58);
+            "A dictionary you build yourself, in place of the one above -- an exact voicing per "
+            "note of the key, played on the keyboard below. Always rooted on the note you play, "
+            "so you are always a tone of it, and written once in terms of the key centre so it "
+            "already covers all twelve keys -- it doesn't matter which octave you play the note "
+            "in either, only which one it is. Pick which key to show it over below, and the "
+            "degree buttons relabel as the concrete notes of that key: to see exactly what plays "
+            "for a C5 on your horn over a held G, select \"G\" as the key and then \"D\" as the "
+            "degree (a fifth above G). It is only a display and editing convenience -- what is "
+            "stored never depends on which key you preview through, and it transposes exactly the "
+            "same for whichever key you actually hold live. Range and voice leading still apply on "
+            "top of a custom voicing; extensions and voicing style do not, since a voicing you "
+            "built yourself already says exactly what it wants to be.");
+        customCard.addRow(customIntro_, 96);
         styleToggle(customOn_, "Use custom dictionary");
         customCard.addRow(customOn_, 24);
         customStatus_.setText("");
@@ -531,18 +603,256 @@ public:
         customContextNote_.setText(
             "Leaving a context off keeps the built-in dictionary for it -- a custom major table "
             "with minor left off still gives you the ordinary minor chords the moment a second "
-            "key is held. Turn this whole card off to get back to how jazz mode always worked.");
+            "key is held. A degree left blank below does the same for just that one note. Turn "
+            "this whole card off to get back to how jazz mode always worked.");
         customCard.addRow(customContextNote_, 44);
 
-        majorHeading_.setText("MAJOR KEY CHORDS", look::muted);
-        customCard.addRow(majorHeading_, 14);
-        buildCustomDegreeRows(customMajorGrid_, customMajorLabels_, customMajorType_);
-        customCard.addRow(customMajorGrid_, customMajorGrid_.preferredHeight());
+        // Which context's table the keyboard below is editing.
+        editContextMajor_.setButtonText("Editing: major");
+        editContextMinor_.setButtonText("Editing: minor");
+        styleSmallButton(editContextMajor_);
+        styleSmallButton(editContextMinor_);
+        editContextMajor_.onClick = [this] { setEditContext(false); };
+        editContextMinor_.onClick = [this] { setEditContext(true); };
+        editContextGrid_.add(editContextMajor_);
+        editContextGrid_.add(editContextMinor_);
+        customCard.addRow(editContextGrid_, editContextGrid_.preferredHeight());
 
-        minorHeading_.setText("MINOR KEY CHORDS", look::muted);
-        customCard.addRow(minorHeading_, 14);
-        buildCustomDegreeRows(customMinorGrid_, customMinorLabels_, customMinorType_);
-        customCard.addRow(customMinorGrid_, customMinorGrid_.preferredHeight());
+        // Which key the degree buttons and the keyboard below are shown
+        // relative to -- purely for a concrete example to look at and edit
+        // through, since the dictionary itself is key-agnostic and this
+        // changes nothing about what is stored. Defaults to C.
+        previewKeyLabel_.setText("SHOW IT OVER THIS KEY", look::muted);
+        customCard.addRow(previewKeyLabel_, 14);
+        for (int i = 0; i < 12; ++i) previewKeyCombo_.addItem(jazz::pitchClassName(i), i + 1);
+        previewKeyCombo_.setSelectedId(1, juce::dontSendNotification);
+        styleCombo(previewKeyCombo_);
+        previewKeyCombo_.onChange = [this] {
+            previewKeyPc_ = juce::jlimit(0, 11, previewKeyCombo_.getSelectedId() - 1);
+            relabelDegreeButtons();
+            refreshCustomEditor();
+        };
+        customCard.addRow(previewKeyCombo_, 26);
+
+        // Which degree of that context the keyboard below is editing --
+        // labelled as the concrete note it would be over the key selected
+        // above, so "what plays for a C5 over a held G" is just "select G
+        // above, then click D" (the degree a fifth above G).
+        for (int i = 0; i < 12; ++i) {
+            auto* b = degreeButtons_.add(new juce::TextButton(jazz::pitchClassName(i)));
+            styleSmallButton(*b);
+            b->setTooltip("Scale degree " + shortDegreeLabel(i) + " above the key you hold.");
+            b->onClick = [this, i] { setEditDegree(i); };
+            degreeGrid_.add(*b);
+        }
+        customCard.addRow(degreeGrid_, degreeGrid_.preferredHeight());
+
+        customVoicingLabel_.setText("VOICING", look::muted);
+        customCard.addRow(customVoicingLabel_, 14);
+        customVoicingStatus_.setText("");
+        customVoicingRow_.addAndMakeVisible(customVoicingStatus_);
+        customVoicingRow_.addAndMakeVisible(clearVoicingButton_);
+        clearVoicingButton_.setButtonText("Clear");
+        clearVoicingButton_.onClick = [this] {
+            processor_.clearJazzCustomVoicing(editMinor_, editDegree_);
+            refreshCustomEditor();
+        };
+        customVoicingRow_.onResize = [this] {
+            clearVoicingButton_.setBounds(customVoicingRow_.getWidth() - 74, 0, 74,
+                                          customVoicingRow_.getHeight());
+            customVoicingStatus_.setBounds(0, 0, customVoicingRow_.getWidth() - 82,
+                                           customVoicingRow_.getHeight());
+        };
+        customCard.addRow(customVoicingRow_, 26);
+
+        // --- Record mode: build the voicing by ear on a real controller
+        // instead of clicking the keyboard below. Every note played while it
+        // is on joins the chord; Reset clears what has been captured so far
+        // without leaving record mode; Save commits it to the selected
+        // degree, the same result a run of keyboard clicks would give.
+        recordRow_.addAndMakeVisible(recordButton_);
+        recordRow_.addAndMakeVisible(recordResetButton_);
+        recordRow_.addAndMakeVisible(recordSaveButton_);
+        recordButton_.setButtonText("Record");
+        recordResetButton_.setButtonText("Reset");
+        recordSaveButton_.setButtonText("Save");
+        styleSmallButton(recordButton_);
+        styleSmallButton(recordResetButton_);
+        styleSmallButton(recordSaveButton_);
+        recordButton_.onClick = [this] {
+            processor_.setJazzCustomRecording(!processor_.jazzCustomRecording());
+            refreshCustomEditor();
+        };
+        recordResetButton_.onClick = [this] {
+            processor_.clearJazzCustomRecordedNotes();
+            refreshCustomEditor();
+        };
+        recordSaveButton_.onClick = [this] {
+            const auto notes = processor_.jazzCustomRecordedNotes();
+            const int root = previewRootNote();
+            processor_.clearJazzCustomVoicing(editMinor_, editDegree_);
+            for (const int note : notes) {
+                processor_.setJazzCustomVoicingNote(editMinor_, editDegree_, note - root, true);
+            }
+            processor_.setJazzCustomRecording(false);
+            refreshCustomEditor();
+        };
+        recordRow_.onResize = [this] {
+            const int w = recordRow_.getWidth() / 3;
+            recordButton_.setBounds(0, 0, w - 4, recordRow_.getHeight());
+            recordResetButton_.setBounds(w, 0, w - 4, recordRow_.getHeight());
+            recordSaveButton_.setBounds(2 * w, 0, w - 4, recordRow_.getHeight());
+        };
+        customCard.addRow(recordRow_, 28);
+        recordNote_.setText(
+            "Record plays through your MIDI controller instead of the keyboard below -- play the "
+            "chord as if the key you were holding were the one selected above. Save writes it to "
+            "the selected degree; it does not touch the named preset library below until you save "
+            "one there too.");
+        customCard.addRow(recordNote_, 44);
+
+        customCard.addRow(customKeyboard_, 96);
+        customKeyboard_.onNoteClicked = [this](int note) {
+            if (processor_.jazzCustomRecording()) return;   // showing the live capture, not the saved entry
+            const int offset = note - previewRootNote();
+            if (offset < -jazz::kMaxCustomOffset || offset > jazz::kMaxCustomOffset) return;
+            const auto entry = processor_.jazzCustomEntry(editMinor_, editDegree_);
+            bool present = false;
+            for (int i = 0; i < entry.count; ++i) present |= entry.offsets[i] == offset;
+            processor_.setJazzCustomVoicingNote(editMinor_, editDegree_, offset, !present);
+            refreshCustomEditor();
+        };
+
+        rangeButtonsRow_.addAndMakeVisible(octaveOutButton_);
+        rangeButtonsRow_.addAndMakeVisible(octaveInButton_);
+        rangeButtonsRow_.addAndMakeVisible(shiftLeftButton_);
+        rangeButtonsRow_.addAndMakeVisible(shiftRightButton_);
+        rangeButtonsRow_.addAndMakeVisible(resetRangeButton_);
+        octaveOutButton_.setButtonText("- Octave");
+        octaveInButton_.setButtonText("+ Octave");
+        shiftLeftButton_.setButtonText("<");
+        shiftRightButton_.setButtonText(">");
+        resetRangeButton_.setButtonText("Reset");
+        for (auto* b : {&octaveOutButton_, &octaveInButton_, &shiftLeftButton_, &shiftRightButton_,
+                        &resetRangeButton_}) {
+            styleSmallButton(*b);
+        }
+        octaveOutButton_.onClick = [this] { customKeyboard_.growByOctave(-1); };
+        octaveInButton_.onClick = [this] { customKeyboard_.growByOctave(1); };
+        shiftLeftButton_.onClick = [this] { customKeyboard_.shiftOctaves(-1); };
+        shiftRightButton_.onClick = [this] { customKeyboard_.shiftOctaves(1); };
+        resetRangeButton_.onClick = [this] { customKeyboard_.resetRange(); };
+        rangeButtonsRow_.onResize = [this] {
+            const int w = rangeButtonsRow_.getWidth() / 5;
+            int x = 0;
+            for (auto* b : {&octaveOutButton_, &octaveInButton_, &shiftLeftButton_,
+                            &shiftRightButton_, &resetRangeButton_}) {
+                b->setBounds(x, 0, w - 4, rangeButtonsRow_.getHeight());
+                x += w;
+            }
+        };
+        customCard.addRow(rangeButtonsRow_, 26);
+        customKeyboardNote_.setText(
+            "Click a key to add or remove it from the voicing for the selected degree. The "
+            "keyboard's own range is just for editing -- move or resize it freely, it does not "
+            "change what plays.");
+        customCard.addRow(customKeyboardNote_, 30);
+
+        // --- Copying a voicing to another note or context, shifted rather
+        // than retyped by hand.
+        copyLabel_.setText("COPY THIS VOICING TO", look::muted);
+        customCard.addRow(copyLabel_, 14);
+        for (int i = 0; i < 12; ++i) {
+            copyTarget_.addItem(juce::String("Major: ") + jazz::pitchClassName(i), i + 1);
+        }
+        for (int i = 0; i < 12; ++i) {
+            copyTarget_.addItem(juce::String("Minor: ") + jazz::pitchClassName(i), i + 13);
+        }
+        copyTarget_.setSelectedId(1, juce::dontSendNotification);
+        styleCombo(copyTarget_);
+        copyButton_.setButtonText("Copy");
+        copyRow_.addAndMakeVisible(copyTarget_);
+        copyRow_.addAndMakeVisible(copyButton_);
+        copyRow_.onResize = [this] {
+            copyButton_.setBounds(copyRow_.getWidth() - 74, 0, 74, copyRow_.getHeight());
+            copyTarget_.setBounds(0, 0, copyRow_.getWidth() - 82, copyRow_.getHeight());
+        };
+        copyButton_.onClick = [this] {
+            const int id = copyTarget_.getSelectedId();
+            if (id <= 0) return;
+            const bool toMinor = id > 12;
+            const int toDegree = (toMinor ? id - 13 : id - 1);
+            processor_.copyJazzCustomVoicing(editMinor_, editDegree_, toMinor, toDegree);
+            customVoicingStatus_.setText(
+                juce::String("Copied to ") + jazz::pitchClassName(toDegree) +
+                    (toMinor ? " (minor)." : " (major)."),
+                look::accent);
+        };
+        customCard.addRow(copyRow_, 28);
+
+        copyTableMajorToMinor_.setButtonText("Copy whole major table to minor");
+        copyTableMinorToMajor_.setButtonText("Copy whole minor table to major");
+        styleSmallButton(copyTableMajorToMinor_);
+        styleSmallButton(copyTableMinorToMajor_);
+        copyTableMajorToMinor_.onClick = [this] {
+            processor_.copyJazzCustomTable(false, true);
+            refreshCustomEditor();
+        };
+        copyTableMinorToMajor_.onClick = [this] {
+            processor_.copyJazzCustomTable(true, false);
+            refreshCustomEditor();
+        };
+        copyTableGrid_.add(copyTableMajorToMinor_);
+        copyTableGrid_.add(copyTableMinorToMajor_);
+        customCard.addRow(copyTableGrid_, copyTableGrid_.preferredHeight());
+
+        relabelDegreeButtons();
+        setEditContext(false);
+        setEditDegree(0);
+
+        // --- Generate from MIDI: analyse a file instead of building the
+        // table by hand.
+        auto& midiCard = addCard("Generate from MIDI");
+        midiImportNote_.setText(
+            "Feeds a MIDI performance through the same key-and-chord analysis, instead of "
+            "building the table above by hand. Finds the key centre (or centres, if it "
+            "modulates) and, within each, what chord was played over which scale degree -- "
+            "filling in as much of the table as the file gives evidence for. A degree it never "
+            "touched stays blank, using the built-in chord the same way an unfilled hand-built "
+            "entry does. This replaces the whole custom dictionary, so save a preset first if you "
+            "want to keep what is there now. It is a heuristic, not a transcription -- check the "
+            "keyboard above afterwards and adjust anything it got wrong.");
+        midiCard.addRow(midiImportNote_, 86);
+        midiImportButton_.setButtonText("Choose a MIDI file...");
+        styleSmallButton(midiImportButton_);
+        midiCard.addRow(midiImportButton_, 28);
+        midiImportStatus_.setText("");
+        midiCard.addRow(midiImportStatus_, 30);
+
+        midiImportButton_.onClick = [this] {
+            midiChooser_ = std::make_unique<juce::FileChooser>("Choose a MIDI file", juce::File(),
+                                                               "*.mid;*.midi");
+            const auto flags = juce::FileBrowserComponent::openMode |
+                               juce::FileBrowserComponent::canSelectFiles;
+            midiChooser_->launchAsync(flags, [this](const juce::FileChooser& chooser) {
+                const auto file = chooser.getResult();
+                if (!file.existsAsFile()) return;
+
+                const auto summary = processor_.importJazzCustomDictionaryFromMidiFile(file);
+                if (summary.ok) {
+                    midiImportStatus_.setText(
+                        "Found " + juce::String(summary.keySegments) + " key centre" +
+                            (summary.keySegments == 1 ? "" : "s") + ", filled " +
+                            juce::String(summary.degreesFilled) + " of 24 degrees from " +
+                            juce::String(summary.chordsAnalyzed) + " sampled chords.",
+                        look::accent);
+                    setEditContext(false);
+                    setEditDegree(0);
+                } else {
+                    midiImportStatus_.setText(summary.error, look::warn);
+                }
+            });
+        };
 
         // --- Presets for that dictionary: a named library on disk, so one
         // built for a project can be brought into another.
@@ -625,15 +935,15 @@ public:
         aHigh_ = std::make_unique<SA>(apvts, P::jazzRangeHigh, highSlider_);
         aSmooth_ = std::make_unique<SA>(apvts, P::jazzSmoothness, smoothSlider_);
         aVoices_ = std::make_unique<SA>(apvts, P::jazzVoices, voicesSlider_);
+        aVoicesAuto_ = std::make_unique<BA>(apvts, P::jazzVoicesAuto, voicesAuto_);
+        aTranspose_ = std::make_unique<SA>(apvts, P::jazzTranspose, transposeSlider_);
+        aTransposeAudio_ = std::make_unique<SA>(apvts, P::jazzTransposeAudioIn, transposeAudioSlider_);
+        aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
+        aGlide_ = std::make_unique<SA>(apvts, P::jazzGlideMs, glideSlider_);
 
         aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
         aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
         aCustomUseMinor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMinor, customUseMinor_);
-        using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
-        for (int i = 0; i < 12; ++i) {
-            aCustomMajorType_.add(new CA(apvts, P::jazzCustomMajorType[i], *customMajorType_[i]));
-            aCustomMinorType_.add(new CA(apvts, P::jazzCustomMinorType[i], *customMinorType_[i]));
-        }
 
         lowSlider_.textFromValueFunction = [](double v) {
             return flatNoteName(static_cast<int>(v));
@@ -645,35 +955,78 @@ public:
         smoothSlider_.valueFromTextFunction = [](const juce::String& s) {
             return s.getDoubleValue() / 100.0;
         };
+        transposeSlider_.textFromValueFunction = [](double v) {
+            switch (static_cast<int>(v)) {
+                case 0:  return juce::String("Concert (C)");
+                case -2: return juce::String("Bb");
+                case 3:  return juce::String("Eb");
+                case 5:  return juce::String("F");
+                default: return (v > 0 ? juce::String("+") : juce::String("")) +
+                                juce::String(static_cast<int>(v)) + " st";
+            }
+        };
+        transposeAudioSlider_.textFromValueFunction = transposeSlider_.textFromValueFunction;
+        glideSlider_.textFromValueFunction = [](double v) {
+            return v < 1.0 ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
+        };
         lowSlider_.updateText();
         highSlider_.updateText();
+        transposeSlider_.updateText();
+        transposeAudioSlider_.updateText();
+        glideSlider_.updateText();
         smoothSlider_.updateText();
     }
+
+    ~JazzPage() override { processor_.setJazzCustomRecording(false); }
 
     void refresh() {
         const auto view = processor_.jazzView();
         const auto settings = processor_.jazzSettings();
 
-        keyRow_->setValue(view.heldKeys == 0
-                              ? juce::String("hold a key")
-                              : juce::String(jazz::pitchClassName(view.keyCentrePc)) +
-                                    (view.minorKey ? " minor" : " major"));
+        voicesSlider_.setEnabled(!voicesAuto_.getToggleState());
+
+        // Keys Transpose already moved keyCentrePc for real (see
+        // collectKeys()), so it prints straight, no further conversion here.
+        // Audio In Transpose can't touch melodyNote -- it's read from real
+        // sound -- so the editor is the only place it's ever applied, and
+        // only to what gets printed: written = concert -
+        // melodyTransposeSemitones, matching the slider's own convention
+        // that -2/+3/+5 are Bb/Eb/F.
+        const int melodyTranspose = view.melodyTransposeSemitones;
+
+        if (view.keyCentrePc >= 0 && (view.heldKeys > 0 || view.keyLatched)) {
+            juce::String tag;
+            if (view.keyLatched) tag += "  (latched)";
+            if (view.sustainHeld) tag += "  [sustain]";
+            keyRow_->setValue(juce::String(jazz::pitchClassName(view.keyCentrePc)) +
+                              (view.minorKey ? " minor" : " major") + tag);
+        } else {
+            keyRow_->setValue(view.sustainHeld ? "sustain down, but nothing latched yet"
+                                               : "hold a key");
+        }
 
         if (view.melodyNote >= 0 && view.melodyHz > 0.0f) {
-            playingRow_->setValue(flatNoteName(view.melodyNote) + "  " +
-                                  juce::String(juce::roundToInt(view.melodyHz)) + " Hz  -  the " +
-                                  jazz::degreeName(view.melodyDegree));
+            playingRow_->setValue(
+                flatNoteName(juce::jlimit(0, 127, view.melodyNote - melodyTranspose)) + "  " +
+                juce::String(juce::roundToInt(view.melodyHz)) + " Hz  -  the " +
+                jazz::degreeName(view.melodyDegree));
         } else {
             playingRow_->setValue("no pitch yet");
         }
 
         if (view.sounding && view.chordRootPc >= 0) {
             // Rebuilt from the published snapshot rather than kept as a string,
-            // so the audio thread never has to format anything.
+            // so the audio thread never has to format anything. A custom
+            // voicing needs its actual notes too -- it has no fixed chord
+            // type to spell a symbol from the way the built-in dictionary's
+            // chords do.
             jazz::Voicing voicing;
             voicing.chordRootPc = view.chordRootPc;
             voicing.type = static_cast<jazz::ChordType>(view.typeIndex);
-            char symbol[32] = {};
+            voicing.customVoicing = view.customVoicing;
+            voicing.count = view.noteCount;
+            for (int i = 0; i < view.noteCount; ++i) voicing.notes[i] = view.notes[i];
+            char symbol[64] = {};
             jazz::chordSymbol(voicing, settings, symbol, sizeof(symbol));
             chordRow_->setValue(juce::String(symbol) + "   " + juce::String(view.roman));
 
@@ -682,9 +1035,11 @@ public:
                 if (view.notes[i] < 0) continue;
                 notes += (notes.isEmpty() ? "" : " ") + flatNoteName(view.notes[i]);
             }
-            voicingRow_->setValue(
-                juce::String(jazz::styleName(static_cast<jazz::Style>(view.styleIndex))) +
-                "  -  " + notes);
+            const juce::String styleLabel =
+                view.customVoicing ? juce::String("Custom")
+                                   : juce::String(jazz::styleName(
+                                         static_cast<jazz::Style>(view.styleIndex)));
+            voicingRow_->setValue(styleLabel + "  -  " + notes);
         } else {
             chordRow_->setValue("-");
             voicingRow_->setValue("-");
@@ -693,11 +1048,17 @@ public:
         if (!view.enabled) {
             status_.setText("Switched off. The harmony mode on the main page is in charge.",
                             look::muted);
-        } else if (view.heldKeys == 0) {
-            status_.setText("Hold a key on your controller to set the key centre.", look::warn);
+        } else if (view.heldKeys == 0 && !view.keyLatched) {
+            status_.setText(view.sustainHeld
+                                ? "Sustain is down, but no key has ever been held to latch."
+                                : "Hold a key on your controller to set the key centre.",
+                            look::warn);
         } else if (view.melodyHz <= 0.0f) {
             status_.setText("Key centre set. Play a note into the input and the chord follows it.",
                             look::warn);
+        } else if (view.sustainHeld) {
+            status_.setText("Sustain is down -- holding the chord out. Let go and press it again "
+                            "for a new one.", look::accent);
         } else if (!view.sounding) {
             status_.setText("Waiting for a steady pitch to build a chord on.", look::warn);
         } else {
@@ -756,6 +1117,8 @@ public:
             customStatus_.setText("On, overriding the chord dictionary for " + which + ".",
                                   look::accent);
         }
+
+        refreshCustomEditor();
     }
 
 private:
@@ -765,23 +1128,87 @@ private:
         void resized() override { if (onResize) onResize(); }
     };
 
-    /** One grid's worth of degree rows: a label plus a chord type combo box
-     *  per scale degree, bound to the twelve parameters for that context by
-     *  the caller once these exist. The chord is always rooted on the note
-     *  the label names -- there is no root to choose. */
-    void buildCustomDegreeRows(Grid& grid, juce::OwnedArray<juce::Label>& labels,
-                               juce::OwnedArray<juce::ComboBox>& types) {
-        for (int i = 0; i < 12; ++i) {
-            auto* label = labels.add(new juce::Label({}, customDegreeLabel(i)));
-            label->setColour(juce::Label::textColourId, look::muted);
-            label->setFont(juce::FontOptions(12.0f));
+    /** Where the keyboard editor's root is drawn: the actual note the chord
+     *  would be rooted on if you held previewKeyPc_ and played editDegree_
+     *  semitones above it, placed in the octave just above middle C. Purely
+     *  a display and editing convenience -- the dictionary itself stores
+     *  offsets from the root, not from any particular key, so this can be
+     *  changed freely without touching what is saved. */
+    int previewRootNote() const {
+        const int rootPc = ((previewKeyPc_ + editDegree_) % 12 + 12) % 12;
+        return 60 + rootPc;
+    }
 
-            auto* typeBox = types.add(new juce::ComboBox());
-            styleCombo(*typeBox);
-            fillCombo(*typeBox, HarmonizerAudioProcessor::kJazzCustomTypeNames);
+    /** Relabels the twelve degree buttons as concrete notes over whichever
+     *  key previewKeyPc_ names, so "what plays for a C5 over a held G" is
+     *  just "select G above, then click D". */
+    void relabelDegreeButtons() {
+        for (int i = 0; i < degreeButtons_.size(); ++i) {
+            const int pc = ((previewKeyPc_ + i) % 12 + 12) % 12;
+            degreeButtons_[i]->setButtonText(jazz::pitchClassName(pc));
+        }
+    }
 
-            grid.add(*label);
-            grid.add(*typeBox);
+    void setEditContext(bool minor) {
+        editMinor_ = minor;
+        editContextMajor_.setToggleState(!minor, juce::dontSendNotification);
+        editContextMinor_.setToggleState(minor, juce::dontSendNotification);
+        refreshCustomEditor();
+    }
+
+    void setEditDegree(int degree) {
+        editDegree_ = juce::jlimit(0, 11, degree);
+        for (int i = 0; i < degreeButtons_.size(); ++i) {
+            degreeButtons_[i]->setToggleState(i == editDegree_, juce::dontSendNotification);
+        }
+        refreshCustomEditor();
+    }
+
+    /** Pulls the currently selected degree's voicing back from the processor
+     *  and repaints the keyboard and summary from it -- called after any
+     *  edit, and every timer tick so a preset load or host automation shows
+     *  up here too. */
+    void refreshCustomEditor() {
+        const bool recording = processor_.jazzCustomRecording();
+        recordButton_.setToggleState(recording, juce::dontSendNotification);
+        recordButton_.setButtonText(recording ? "Stop" : "Record");
+
+        const int root = previewRootNote();
+        const juce::String context = editMinor_ ? "minor" : "major";
+        const juce::String keyName = jazz::pitchClassName(previewKeyPc_);
+        const juce::String degree =
+            juce::String(jazz::pitchClassName(((previewKeyPc_ + editDegree_) % 12 + 12) % 12)) +
+            " (" + shortDegreeLabel(editDegree_) + ")";
+
+        if (recording) {
+            const auto recorded = processor_.jazzCustomRecordedNotes();
+            customKeyboard_.setHighlightedNotes(recorded, root);
+            customVoicingStatus_.setText(
+                degree + " over a held " + keyName + ", " + context + ":  recording -- " +
+                    juce::String(recorded.size()) + " note" + (recorded.size() == 1 ? "" : "s") +
+                    " captured. Play more, Reset to clear, or Save to write it to this degree.",
+                look::warn);
+            return;
+        }
+
+        const auto entry = processor_.jazzCustomEntry(editMinor_, editDegree_);
+        juce::Array<int> notes;
+        juce::String summary;
+        for (int i = 0; i < entry.count; ++i) {
+            notes.add(root + entry.offsets[i]);
+            summary += (summary.isEmpty() ? "" : " ") +
+                       juce::String(jazz::intervalName(entry.offsets[i]));
+        }
+        customKeyboard_.setHighlightedNotes(notes, root);
+
+        if (entry.count == 0) {
+            customVoicingStatus_.setText(
+                degree + " over a held " + keyName + ", " + context +
+                    " -- blank, using the built-in chord for now.",
+                look::muted);
+        } else {
+            customVoicingStatus_.setText(
+                degree + " over a held " + keyName + ", " + context + ":  " + summary, look::accent);
         }
     }
 
@@ -800,13 +1227,21 @@ private:
     juce::OwnedArray<juce::ToggleButton> styleToggles_;
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
-    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_;
+    juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_,
+        transposeAudioSlider_, glideSlider_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_;
+    look::Note glideLabel_, glideNote_;
+    juce::ToggleButton voicesAuto_, latch_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_,
+        aTransposeAudio_;
     std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
     std::unique_ptr<look::StatRow> keyRow_, playingRow_, chordRow_, voicingRow_, rangeRow_,
         smoothRow_;
     look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
         inversionLabel_, shiftNote_, rangeLabel_, rangeNote_, smoothNote_, stylesNote_,
-        shuffleNote_, doubleNote_;
+        shuffleNote_, doubleNote_, transposeLabel_, transposeNote_, transposeAudioLabel_,
+        transposeAudioNote_, latchNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aEnable_, aNinth_,
         aEleventh_, aThirteenth_, aShuffle_, aDouble_;
@@ -817,15 +1252,45 @@ private:
     // --- Custom chord dictionary.
     juce::ToggleButton customOn_, customUseMajor_, customUseMinor_;
     Grid customContextGrid_{2, 26};
-    Grid customMajorGrid_{2, 26}, customMinorGrid_{2, 26};
-    juce::OwnedArray<juce::Label> customMajorLabels_, customMinorLabels_;
-    juce::OwnedArray<juce::ComboBox> customMajorType_, customMinorType_;
-    look::Note customIntro_, customStatus_, customContextNote_, majorHeading_, minorHeading_;
+    look::Note customIntro_, customStatus_, customContextNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aCustomOn_,
         aCustomUseMajor_, aCustomUseMinor_;
-    juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> aCustomMajorType_,
-        aCustomMinorType_;
+
+    // Which (context, degree) the keyboard editor below is showing right now
+    // -- pure UI state, not a parameter; the dictionary itself is written
+    // once per context and covers all twelve keys regardless of which one is
+    // selected here.
+    bool editMinor_ = false;
+    int editDegree_ = 0;
+    int previewKeyPc_ = 0;
+    juce::TextButton editContextMajor_, editContextMinor_;
+    Grid editContextGrid_{2, 26};
+    look::Note previewKeyLabel_;
+    juce::ComboBox previewKeyCombo_;
+    juce::OwnedArray<juce::TextButton> degreeButtons_;
+    Grid degreeGrid_{6, 24};
+    look::Note customVoicingLabel_, customVoicingStatus_, customKeyboardNote_;
+    juce::TextButton clearVoicingButton_;
+    Holder customVoicingRow_;
+    juce::TextButton recordButton_, recordResetButton_, recordSaveButton_;
+    Holder recordRow_;
+    look::Note recordNote_;
+    harmonizer::PianoKeyboardComponent customKeyboard_;
+    juce::TextButton octaveOutButton_, octaveInButton_, shiftLeftButton_, shiftRightButton_,
+        resetRangeButton_;
+    Holder rangeButtonsRow_;
+
+    look::Note copyLabel_;
+    juce::ComboBox copyTarget_;
+    juce::TextButton copyButton_;
+    Holder copyRow_;
+    juce::TextButton copyTableMajorToMinor_, copyTableMinorToMajor_;
+    Grid copyTableGrid_{2, 26};
+
+    look::Note midiImportNote_, midiImportStatus_;
+    juce::TextButton midiImportButton_;
+    std::unique_ptr<juce::FileChooser> midiChooser_;
 
     // --- Custom dictionary presets.
     juce::TextEditor presetNameEditor_;

@@ -458,6 +458,313 @@ static void testJazzChordMode() {
     }
 }
 
+// Keys Transpose and Audio In Transpose do genuinely different things.
+// Keys Transpose is real: added to every held key before it names a key
+// centre, so holding a familiar key while reading a transposing
+// instrument's chart actually changes what key the chord is built in --
+// this test confirms holding concert C with Keys Transpose set to Bb (-2)
+// really does put the engine in the key of concert Bb, answering "can I
+// hold C to play in concert Bb?" with yes. Audio In Transpose can't work
+// that way -- the melody note is measured from real sound, so it stays
+// real and untouched regardless of the setting; only the editor's display
+// formula (written = concert - melodyTransposeSemitones) ever uses it.
+static void testJazzTranspose() {
+    std::printf("\n-- Jazz transpose --\n");
+    const double sr = 48000.0;
+    const double f0 = 233.082;   // Bb3, concert
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzTranspose, -2.0f);          // keys: Bb instrument
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzTransposeAudioIn, -2.0f);   // audio: Bb instrument
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    const int total = static_cast<int>(sr * 1.5);
+    std::vector<float> source(static_cast<size_t>(total));
+    makeVoice(source, f0, sr);
+    juce::AudioBuffer<float> buffer(1, 256);
+    bool sent = false;
+    for (int pos = 0; pos < total; pos += 256) {
+        const int n = juce::jmin(256, total - pos);
+        buffer.setSize(1, n, false, false, true);
+        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+        juce::MidiBuffer midi;
+        // Concert C on the keys -- with Keys Transpose at Bb, this should
+        // really put the key centre in concert Bb, not just label it that.
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+        p.processBlock(buffer, midi);
+    }
+    const auto v = p.jazzView();
+    check(v.sounding && v.keyCentrePc == 10,
+          juce::String("holding concert C with Keys Transpose set to Bb (-2) names the real key "
+                       "centre ") +
+              (v.keyCentrePc >= 0 ? jazz::pitchClassName(v.keyCentrePc) : "?") +
+              " -- Keys Transpose must actually change what key the engine builds in, not just "
+              "how it's labelled");
+    check(v.melodyNote % 12 == 10,
+          juce::String("Audio In Transpose must never shift the real, measured melody pitch -- "
+                       "got pitch class ") + juce::String(v.melodyNote % 12) + ", expected 10 (Bb)");
+    check(v.melodyTransposeSemitones == -2,
+          "the published view echoes Audio In Transpose for the editor to display with");
+
+    const int writtenMelodyPc = ((v.melodyNote - v.melodyTransposeSemitones) % 12 + 12) % 12;
+    check(writtenMelodyPc == 0,
+          juce::String("real melody Bb displayed under Audio In Transpose -2 (Bb) reads as ") +
+              jazz::pitchClassName(writtenMelodyPc) + ", expected C");
+}
+
+// Latch freezes the key centre against key releases: it only ever updates
+// from a fresh press, so lifting one finger of a held minor chord can't be
+// misread as "you meant major" mid-release.
+static void testJazzLatch() {
+    std::printf("\n-- Jazz key latch --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    const auto run = [&](bool latch) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzLatchKeys, latch ? 1.0f : 0.0f);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+
+        int step = 0;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (step == 0) midi.addEvent(juce::MidiMessage::noteOn(1, 48, 0.8f), 0);        // bottom key
+            else if (step == 5) midi.addEvent(juce::MidiMessage::noteOn(1, 55, 0.8f), 0);   // + upper key -> minor
+            else if (step == 10) midi.addEvent(juce::MidiMessage::noteOff(1, 55), 0);       // release upper
+            ++step;
+            p.processBlock(buffer, midi);
+        }
+        return p.jazzView();
+    };
+
+    const auto latched = run(true);
+    check(latched.sounding && latched.minorKey && latched.keyCentrePc == 0 && latched.keyLatched &&
+              latched.heldKeys == 1,
+          juce::String("with latch on, releasing the upper key of a minor pair stays minor "
+                       "(minor=") +
+              (latched.minorKey ? "yes" : "no") + ", latched=" + (latched.keyLatched ? "yes" : "no") +
+              ", physically held=" + juce::String(latched.heldKeys) + ")");
+
+    const auto live = run(false);
+    check(live.sounding && !live.minorKey && !live.keyLatched,
+          juce::String("without latch, the same release reverts to major -- the bug latch exists "
+                       "to fix (minor=") +
+              (live.minorKey ? "yes" : "no") + ")");
+}
+
+// The sustain pedal (CC64) freezes the currently sounding chord -- even as
+// the melody note moves on -- and stands in for latch while held, so the
+// key centre survives every keyboard key being released too.
+static void testJazzSustain() {
+    std::printf("\n-- Jazz sustain pedal --\n");
+    const double sr = 48000.0;
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    const auto renderTone = [&](double f0, double seconds, const juce::MidiMessage* firstEvent) {
+        const int total = static_cast<int>(sr * seconds);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent && firstEvent != nullptr) { midi.addEvent(*firstEvent, 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+    };
+
+    auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+    renderTone(220.0, 1.5, &keyOn);   // hold C, play A3 -- let a chord settle
+    const auto before = p.jazzView();
+    check(before.sounding, "a chord settles before the pedal is touched");
+
+    auto sustainDown = juce::MidiMessage::controllerEvent(1, 64, 127);
+    renderTone(220.0, 0.1, &sustainDown);
+    renderTone(330.0, 1.5, nullptr);   // switch to E4 -- a different degree entirely
+    const auto frozen = p.jazzView();
+    check(frozen.sustainHeld && frozen.chordRootPc == before.chordRootPc &&
+              frozen.melodyDegree == before.melodyDegree,
+          "the chord holds through a melody change while the pedal is down");
+
+    auto sustainUp = juce::MidiMessage::controllerEvent(1, 64, 0);
+    renderTone(330.0, 0.1, &sustainUp);
+    renderTone(330.0, 1.5, nullptr);
+    const auto released = p.jazzView();
+    check(!released.sustainHeld && released.melodyNote == 64,
+          juce::String("releasing the pedal lets the chord follow the new melody note again "
+                       "(got melody note ") +
+              juce::String(released.melodyNote) + ")");
+
+    auto sustainDown2 = juce::MidiMessage::controllerEvent(1, 64, 127);
+    renderTone(330.0, 0.1, &sustainDown2);
+    auto keyOff = juce::MidiMessage::noteOff(1, 60);
+    renderTone(330.0, 0.1, &keyOff);   // release the keyboard key while the pedal is down
+    renderTone(330.0, 1.5, nullptr);
+    const auto stillNamed = p.jazzView();
+    check(stillNamed.sounding && stillNamed.heldKeys == 0 && stillNamed.keyLatched,
+          "the pedal keeps the key centre alive even after every keyboard key is released");
+}
+
+// Glide's voice matching (retarget in place, converge when the chord
+// shrinks, split when it grows) lives entirely in jazzApply() -- dsptest
+// covers the engine primitives it calls (retargetVoiceNote,
+// spawnVoiceFromNote) directly; this covers the matching algorithm end to
+// end through the full plugin, using a custom dictionary to pin the exact
+// voice count of each chord.
+static void testJazzGlide() {
+    std::printf("\n-- Jazz glide --\n");
+    const double sr = 48000.0;
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 300.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoicesAuto, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
+    // Degree 0 (the root) gets a four-note voicing; degree 4 (the third)
+    // gets a two-note voicing -- switching between them changes the voice
+    // count, not just the pitches. Cleared first -- every degree starts out
+    // seeded with a built-in-equivalent voicing, not blank.
+    p.clearJazzCustomVoicing(false, 0);
+    p.clearJazzCustomVoicing(false, 4);
+    for (int offset : {4, 7, 11, 14}) p.setJazzCustomVoicingNote(false, 0, offset, true);
+    for (int offset : {3, 7}) p.setJazzCustomVoicingNote(false, 4, offset, true);
+
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    const auto renderTone = [&](double f0, double seconds, const juce::MidiMessage* firstEvent) {
+        const int total = static_cast<int>(sr * seconds);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent && firstEvent != nullptr) { midi.addEvent(*firstEvent, 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+    };
+
+    auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+    renderTone(261.63, 1.5, &keyOn);   // C held, sing C4 -- degree 0, the four-note chord
+    check(p.metrics().activeVoices == 4,
+          juce::String("the four-note custom voicing settles to 4 active voices (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // Switch to E4 -- degree 4, the two-note voicing. Glide is on, so the
+    // two excess voices converge onto the two remaining tones instead of
+    // being cut: nothing is released, so the voice count does not drop.
+    renderTone(329.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("with glide, shrinking to 2 voices converges rather than cutting -- "
+                       "still 4 active (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // Back to C4 -- degree 0, the four-note voicing again. The two
+    // converged pairs are reused as the retarget targets, so this still
+    // does not need to spawn anything new.
+    renderTone(261.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("back to 4 voices reuses the converged pair rather than doubling up "
+                       "further (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // With glide off, the same shrink is an ordinary note-off/note-on diff:
+    // the excess voices are actually released.
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 0.0f);
+    renderTone(329.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 2,
+          juce::String("without glide, shrinking to 2 voices actually releases the excess "
+                       "(got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+
+    // And growing back from there needs a genuine split, since there is no
+    // spare converged voice left over to reuse this time.
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzGlideMs, 300.0f);
+    renderTone(261.63, 1.5, nullptr);
+    check(p.metrics().activeVoices == 4,
+          juce::String("growing from 2 voices to 4 splits to cover the new ones (got ") +
+              juce::String(p.metrics().activeVoices) + ")");
+}
+
+// Auto harmony voices ignores the Chord Voices slider entirely and lets
+// through exactly as many notes as the chord naturally has -- extensions
+// included -- rather than the number picked ahead of time.
+static void testJazzAutoVoices() {
+    std::printf("\n-- Auto harmony voices --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;   // A3, MIDI 57 -- degree 9 (the sixth) above a held C
+
+    const auto run = [&](bool autoVoices) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzNinth, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzEleventh, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzThirteenth, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoices, 2.0f);   // a tight cap...
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzVoicesAuto, autoVoices ? 1.0f : 0.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeLow, 24.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzRangeHigh, 108.0f);
+
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+        bool sent = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+            p.processBlock(buffer, midi);
+        }
+        return p.jazzView();
+    };
+
+    const auto capped = run(false);
+    check(capped.sounding && capped.noteCount <= 2,
+          juce::String("without auto, a tight cap holds (got ") + juce::String(capped.noteCount) +
+              " voices)");
+
+    const auto autoResult = run(true);
+    check(autoResult.sounding && autoResult.noteCount > 2,
+          juce::String("with auto on, the same tight cap is ignored and the whole extended chord "
+                       "plays (got ") +
+              juce::String(autoResult.noteCount) + " voices)");
+}
+
 // The custom chord dictionary is a plugin-only layer over jazz mode's own
 // chords: off by default (jazz mode is unchanged), and switched on it hands
 // the chosen chord type straight through the engine the same way the
@@ -475,7 +782,13 @@ static void testJazzCustomDictionary() {
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
     setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
-    setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 4);  // Min7b5
+    // Degree 9 (the sixth) gets a Min7b5-quality voicing: minor third, tritone,
+    // minor seventh above the root. Cleared first -- every degree starts out
+    // seeded with a built-in-equivalent voicing, not blank.
+    p.clearJazzCustomVoicing(false, 9);
+    p.setJazzCustomVoicingNote(false, 9, 3, true);
+    p.setJazzCustomVoicingNote(false, 9, 6, true);
+    p.setJazzCustomVoicingNote(false, 9, 10, true);
 
     p.setPlayConfigDetails(1, 1, sr, 256);
     p.prepareToPlay(sr, 256);
@@ -494,11 +807,55 @@ static void testJazzCustomDictionary() {
         p.processBlock(buffer, midi);
     }
     const auto v = p.jazzView();
-    check(v.sounding && v.chordRootPc == 9 && v.typeIndex == static_cast<int>(jazz::ChordType::Min7b5) &&
-              v.melodyNote == 57 && v.melodyDegree == 1,
-          juce::String("C held, A3 played, custom A degree set to Min7b5 -> root ") +
+    bool haveMinorThird = false, haveTritone = false, haveMinorSeventh = false;
+    for (int i = 0; i < v.noteCount; ++i) {
+        switch (((v.notes[i] - v.chordRootPc) % 12 + 12) % 12) {
+            case 3:  haveMinorThird = true; break;
+            case 6:  haveTritone = true; break;
+            case 10: haveMinorSeventh = true; break;
+            default: break;
+        }
+    }
+    check(v.sounding && v.chordRootPc == 9 && v.customVoicing && v.melodyNote == 57 &&
+              v.melodyDegree == 1 && haveMinorThird && haveTritone && haveMinorSeventh,
+          juce::String("C held, A3 played, custom A degree set to a Min7b5-quality voicing -> root ") +
               (v.chordRootPc >= 0 ? jazz::pitchClassName(v.chordRootPc) : "?") + " " + v.roman +
               ", you are the " + jazz::degreeName(v.melodyDegree));
+
+    // Copying a voicing to another degree shifts it by the distance between
+    // them, so it keeps the same shape relative to whichever note reaches
+    // that new degree; copying to another context copies it untransposed.
+    {
+        p.copyJazzCustomVoicing(false, 9, false, 2);   // major 9 (b3,b5,b7) -> major 2
+        const auto copied = p.jazzCustomEntry(false, 2);
+        bool haveShiftedThird = false, haveShiftedFifth = false, haveShiftedSeventh = false;
+        for (int i = 0; i < copied.count; ++i) {
+            switch (copied.offsets[i]) {
+                // Degree 9 -> 2 is a shift of -7 semitones: 3 -> -4, 6 -> -1, 10 -> 3.
+                case -4: haveShiftedThird = true; break;
+                case -1: haveShiftedFifth = true; break;
+                case 3:  haveShiftedSeventh = true; break;
+                default: break;
+            }
+        }
+        check(copied.count == 3 && haveShiftedThird && haveShiftedFifth && haveShiftedSeventh,
+              juce::String("copying to another degree shifts every tone by the same amount (got ") +
+                  juce::String(copied.count) + " notes)");
+
+        p.copyJazzCustomVoicing(false, 9, true, 9);   // major 9 -> minor 9, no shift
+        const auto crossContext = p.jazzCustomEntry(true, 9);
+        bool haveThirdNoShift = false, haveTritoneNoShift = false, haveSeventhNoShift = false;
+        for (int i = 0; i < crossContext.count; ++i) {
+            switch (crossContext.offsets[i]) {
+                case 3:  haveThirdNoShift = true; break;
+                case 6:  haveTritoneNoShift = true; break;
+                case 10: haveSeventhNoShift = true; break;
+                default: break;
+            }
+        }
+        check(crossContext.count == 3 && haveThirdNoShift && haveTritoneNoShift && haveSeventhNoShift,
+              "copying to the other context copies the voicing untransposed");
+    }
 
     // Minor was never turned on for the custom dictionary, so two keys still
     // fall back to the ordinary built-in minor dictionary rather than reusing
@@ -533,6 +890,57 @@ static void testJazzCustomDictionary() {
                   mv.roman + ")");
     }
 
+    // Record mode: MIDI note-ons captured while it is active build a voicing
+    // by ear, on the same middle-C-as-root convention the keyboard editor
+    // uses, instead of naming a key centre or sounding through the engine.
+    {
+        HarmonizerAudioProcessor recP;
+        setValue(recP, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        recP.setPlayConfigDetails(1, 1, sr, 256);
+        recP.prepareToPlay(sr, 256);
+
+        check(!recP.jazzCustomRecording(), "record mode starts off");
+        recP.setJazzCustomRecording(true);
+        check(recP.jazzCustomRecording(), "record mode switches on");
+
+        juce::AudioBuffer<float> silent(1, 256);
+        silent.clear();
+        juce::MidiBuffer midi;
+        // A C major triad an octave above middle C: 72, 76, 79.
+        for (int note : {72, 76, 79}) midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+        recP.processBlock(silent, midi);
+
+        const auto captured = recP.jazzCustomRecordedNotes();
+        check(captured.size() == 3 && captured.contains(72) && captured.contains(76) &&
+                  captured.contains(79),
+              juce::String("captured the notes played while recording (got ") +
+                  juce::String(captured.size()) + ")");
+
+        // Notes captured while recording do not name a key centre -- jazz
+        // mode has nothing held, so nothing sounds.
+        check(!recP.jazzView().sounding,
+              "notes captured while recording do not also drive jazz mode's own key centre");
+
+        // Reset clears the buffer without leaving record mode.
+        recP.clearJazzCustomRecordedNotes();
+        check(recP.jazzCustomRecordedNotes().isEmpty() && recP.jazzCustomRecording(),
+              "reset clears the capture buffer but stays in record mode");
+
+        // Recapture and commit to a degree, the way the editor's Save button
+        // does -- offsets relative to middle C (60).
+        juce::MidiBuffer midi2;
+        for (int note : {72, 76, 79}) midi2.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+        recP.processBlock(silent, midi2);
+        const auto toCommit = recP.jazzCustomRecordedNotes();
+        recP.clearJazzCustomVoicing(false, 4);
+        for (int note : toCommit) recP.setJazzCustomVoicingNote(false, 4, note - 60, true);
+        recP.setJazzCustomRecording(false);
+
+        const auto committed = recP.jazzCustomEntry(false, 4);
+        check(!recP.jazzCustomRecording(), "saving stops record mode");
+        check(committed.count == 3, "the recorded voicing committed to the chosen degree");
+    }
+
     // Presets: a save/load/delete round trip through the small file-backed
     // library, independent of host session state.
     {
@@ -543,13 +951,22 @@ static void testJazzCustomDictionary() {
         check(p.jazzDictionaryPresetNames().contains(name), "it shows up in the preset list");
 
         // Change the live dictionary, then load the preset back over it.
-        setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 0);  // Maj7
+        p.clearJazzCustomVoicing(false, 9);
+        p.setJazzCustomVoicingNote(false, 9, 4, true);   // Maj7-quality, for now
         check(p.loadJazzDictionaryPreset(name), "the preset loads");
-        const float loadedBack = *p.apvts.getRawParameterValue(
-            HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9]);
-        check(juce::roundToInt(loadedBack) == 4,
-              juce::String("loading the preset restores the saved chord type (got ") +
-                  juce::String(juce::roundToInt(loadedBack)) + ")");
+        const auto loadedBack = p.jazzCustomEntry(false, 9);
+        bool loadedMinorThird = false, loadedTritone = false, loadedMinorSeventh = false;
+        for (int i = 0; i < loadedBack.count; ++i) {
+            switch (loadedBack.offsets[i]) {
+                case 3:  loadedMinorThird = true; break;
+                case 6:  loadedTritone = true; break;
+                case 10: loadedMinorSeventh = true; break;
+                default: break;
+            }
+        }
+        check(loadedBack.count == 3 && loadedMinorThird && loadedTritone && loadedMinorSeventh,
+              juce::String("loading the preset restores the saved voicing (got ") +
+                  juce::String(loadedBack.count) + " notes)");
 
         check(p.deleteJazzDictionaryPreset(name), "the preset deletes");
         check(!p.jazzDictionaryPresetNames().contains(name), "and is gone from the list");
@@ -694,6 +1111,11 @@ int main() {
     testSidechainInput();
     testSilentMainBusDoesNotAttenuate();
     testJazzChordMode();
+    testJazzTranspose();
+    testJazzLatch();
+    testJazzSustain();
+    testJazzGlide();
+    testJazzAutoVoices();
     testJazzCustomDictionary();
 
     std::printf("\n=============================================\n");

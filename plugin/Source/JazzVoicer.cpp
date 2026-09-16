@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 
 namespace jazz {
@@ -83,6 +84,13 @@ constexpr const char* kOffsetRomanLower[12] = {
     "i", "bii", "ii", "biii", "iii", "iv", "#iv", "v", "bvi", "vi", "bvii", "vii"
 };
 
+// Generic upper-structure names, independent of chord quality -- what a
+// custom voicing's tones are labelled with, since it has no fixed type to
+// spell them against the way the built-in dictionary's chords do.
+constexpr const char* kIntervalNames[12] = {
+    "R", "b9", "9", "b3", "3", "11", "#11", "5", "b13", "13", "b7", "7"
+};
+
 // --- small helpers ----------------------------------------------------------
 
 int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -90,6 +98,22 @@ int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 int pitchClass(int note) {
     const int pc = note % 12;
     return pc < 0 ? pc + 12 : pc;
+}
+
+/** Which generic degree (1, 3, 5, 7, 9, 11 or 13) a semitone offset above a
+ *  root is nearest to -- how a custom voicing's tones are prioritised when
+ *  there are more of them than the voice cap allows, using the same
+ *  priority table every other chord in this file already uses. */
+int genericDegree(int semitonesAboveRoot) {
+    switch (pitchClass(semitonesAboveRoot)) {
+        case 0:            return 1;
+        case 1: case 2:    return 9;
+        case 3: case 4:    return 3;
+        case 5: case 6:    return 11;
+        case 7:            return 5;
+        case 8: case 9:    return 13;
+        default:           return 7;   // 10 or 11
+    }
 }
 
 /** Insertion sort of notes carrying their chord degree along. */
@@ -122,8 +146,10 @@ int degreePriority(int degree) {
 }
 
 struct ToneSet {
-    int offset[7] = {};    // semitones above the chord root, ascending
-    int degree[7] = {};
+    // Big enough for the built-in dictionary's seven tertian tones (root
+    // through 13th) and for a fully custom voicing's kMaxVoicingNotes.
+    int offset[kMaxVoicingNotes] = {};    // semitones above the chord root, ascending
+    int degree[kMaxVoicingNotes] = {};
     int count = 0;
 };
 
@@ -145,24 +171,21 @@ ToneSet buildTones(ChordType type, const Settings& s) {
     return t;
 }
 
-/** "iim7", "bIImaj7", "V7b9" ... for a custom entry, in the same style the
- *  built-in dictionary is written in by hand. */
-void buildCustomRoman(int rootOffset, ChordType type, char* out, int outSize) {
-    const bool lower = (type == ChordType::Min7 || type == ChordType::Min7b5 ||
-                        type == ChordType::Dim7);
-    const char* base = (lower ? kOffsetRomanLower : kOffsetRomanUpper)[clampi(rootOffset, 0, 11)];
-    const char* suffix = "dim7";
-    switch (type) {
-        case ChordType::Maj7:   suffix = "maj7"; break;
-        case ChordType::Dom7:   suffix = "7";    break;
-        case ChordType::Dom7b9: suffix = "7b9";  break;
-        case ChordType::Min7:   suffix = "m7";   break;
-        case ChordType::Min7b5: suffix = "m7b5"; break;
-        case ChordType::Dim7:
-        case ChordType::Count:
-        default: break;
+/** "ii", "bII", "V" ... for a custom entry -- the bare scale-degree function,
+ *  case chosen from whichever third the voicing actually contains. Unlike
+ *  the built-in dictionary's roman numerals this carries no chord-quality
+ *  suffix: a custom voicing has no fixed type to spell one from, and the
+ *  chord symbol above it already gives the detail. */
+void buildCustomRoman(int rootOffset, const CustomEntry& entry, char* out, int outSize) {
+    bool minorThird = false, majorThird = false;
+    for (int i = 0; i < entry.count; ++i) {
+        const int pc = pitchClass(entry.offsets[i]);
+        if (pc == 3) minorThird = true;
+        if (pc == 4) majorThird = true;
     }
-    std::snprintf(out, static_cast<size_t>(outSize), "%s%s", base, suffix);
+    const bool lower = minorThird && !majorThird;
+    const char* base = (lower ? kOffsetRomanLower : kOffsetRomanUpper)[clampi(rootOffset, 0, 11)];
+    std::snprintf(out, static_cast<size_t>(outSize), "%s", base);
 }
 
 /** Which chord degree a pitch class is, given the chord -- for the readout. */
@@ -220,7 +243,7 @@ int shapeStyle(Style style, const ToneSet& t, int* offset, int* degree) {
             // the third. A perfect fourth if one is there, otherwise the closest
             // interval to it, which is what gives the So What sound its
             // occasional major third on top.
-            bool used[7] = {};
+            bool used[kMaxVoicingNotes] = {};
             int start = -1;
             for (int i = 0; i < n; ++i) if (t.degree[i] == 3) { start = i; break; }
             if (start < 0) start = (n > 1) ? 1 : 0;
@@ -356,21 +379,33 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
 
     const bool customActive =
         s.useCustomDictionary && (minor ? s.customDict.useMinor : s.customDict.useMajor);
+    bool usingCustomVoicing = false;
+    ToneSet customTones;
     if (customActive) {
         const CustomEntry& custom = (minor ? s.customDict.minor : s.customDict.major)[degree];
-        // Always rooted on the note being played -- the one rule a custom
-        // entry is not free to break, since it is what guarantees the played
-        // note is a tone of whatever chord comes out.
-        rootOffset = degree;
-        const int typeIndex = clampi(static_cast<int>(custom.type), 0,
-                                     static_cast<int>(ChordType::Count) - 1);
-        type = static_cast<ChordType>(typeIndex);
-        buildCustomRoman(rootOffset, type, customRomanBuf_, sizeof(customRomanBuf_));
-        roman = customRomanBuf_;
+        if (custom.count > 0) {
+            // Always rooted on the note being played -- the one rule a custom
+            // entry is not free to break, since it is what guarantees the
+            // played note is a tone of whatever chord comes out.
+            usingCustomVoicing = true;
+            rootOffset = degree;
+            customTones.count = 0;
+            for (int i = 0; i < custom.count && i < kMaxVoicingNotes; ++i) {
+                const int off = custom.offsets[i];
+                customTones.offset[customTones.count] = off;
+                customTones.degree[customTones.count] = genericDegree(off);
+                ++customTones.count;
+            }
+            buildCustomRoman(rootOffset, custom, customRomanBuf_, sizeof(customRomanBuf_));
+            roman = customRomanBuf_;
+        }
+        // count == 0: this degree has nothing of its own yet, so it keeps
+        // whatever the built-in dictionary already picked above rather than
+        // going silent -- the same per-context fallback extended per degree.
     }
 
     const int rootPc = (keyPc + rootOffset) % 12;
-    const ToneSet tones = buildTones(type, s);
+    const ToneSet tones = usingCustomVoicing ? ToneSet{} : buildTones(type, s);
 
     // Guard the range: a window narrower than an octave has nowhere to put a
     // chord, and the folding below would spin.
@@ -421,19 +456,38 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     int bestCount = 0;
     Style bestStyle = Style::Close;
 
-    for (int styleIndex = 0; styleIndex < kStyleCount; ++styleIndex) {
-        const Style style = static_cast<Style>(styleIndex);
-        if (anyStyleChosen && !s.styles[styleIndex]) continue;
-
+    // A custom voicing already says exactly which tones make up the chord --
+    // no style reshapes it and no extension stacks onto it, since both would
+    // silently change tones someone picked, recorded or imported on purpose.
+    // It still goes through the one placement search below, so range, octave,
+    // inversion and voice leading all still apply to where it sits.
+    const int styleIterations = usingCustomVoicing ? 1 : kStyleCount;
+    for (int styleIndex = 0; styleIndex < styleIterations; ++styleIndex) {
+        Style style = Style::Close;
         int shapeOffset[kMaxVoicingNotes] = {};
         int shapeDegree[kMaxVoicingNotes] = {};
-        const int shapeCount = shapeStyle(style, tones, shapeOffset, shapeDegree);
-        if (shapeCount <= 0) continue;
+        int shapeCount = 0;
+        float bias = 0.0f;
 
-        // One draw per style rather than per placement, so shuffling picks a
-        // different voicing rather than a different octave of the same one.
-        const float jitter = s.shuffle ? nextRandom() * 1.5f : 0.0f;
-        const float bias = (anyStyleChosen ? 0.0f : autoStyleBias(style)) + jitter;
+        if (usingCustomVoicing) {
+            shapeCount = customTones.count;
+            for (int i = 0; i < shapeCount; ++i) {
+                shapeOffset[i] = customTones.offset[i];
+                shapeDegree[i] = customTones.degree[i];
+            }
+        } else {
+            style = static_cast<Style>(styleIndex);
+            if (anyStyleChosen && !s.styles[styleIndex]) continue;
+
+            shapeCount = shapeStyle(style, tones, shapeOffset, shapeDegree);
+            if (shapeCount <= 0) continue;
+
+            // One draw per style rather than per placement, so shuffling picks
+            // a different voicing rather than a different octave of the same
+            // one.
+            const float jitter = s.shuffle ? nextRandom() * 1.5f : 0.0f;
+            bias = (anyStyleChosen ? 0.0f : autoStyleBias(style)) + jitter;
+        }
 
         // An inversion step moves the chord by one of its own voices rather than
         // by an octave -- the fine control between the octave switch's steps.
@@ -583,10 +637,13 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     out.scaleDegree = degree;
     out.chordRootPc = rootPc;
     out.type = type;
+    out.customVoicing = usingCustomVoicing;
     out.roman = roman;
     out.style = bestStyle;
     out.melodyNote = melodyNote;
-    out.melodyDegree = degreeOfPitchClass(type, pitchClass(melodyNote - rootPc));
+    // A custom voicing is always rooted on the played note by construction
+    // (rootOffset == degree above), so the player is always its root.
+    out.melodyDegree = usingCustomVoicing ? 1 : degreeOfPitchClass(type, pitchClass(melodyNote - rootPc));
     out.rangeLimited = limited;
     out.windowLow = lo;
     out.windowHigh = hi;
@@ -634,12 +691,51 @@ const char* degreeName(int degree) {
     }
 }
 
+const char* intervalName(int semitonesAboveRoot) {
+    return kIntervalNames[pitchClass(semitonesAboveRoot)];
+}
+
+int chordTypeTones(ChordType type, int* outOffsets, int maxOffsets) {
+    if (outOffsets == nullptr || maxOffsets <= 0) return 0;
+    const TypeSpec& spec = kTypeSpecs[clampi(static_cast<int>(type), 0,
+                                             static_cast<int>(ChordType::Count) - 1)];
+    const int tones[3] = {spec.third, spec.fifth, spec.seventh};
+    const int n = clampi(maxOffsets, 0, 3);
+    for (int i = 0; i < n; ++i) outOffsets[i] = tones[i];
+    return n;
+}
+
 void chordSymbol(const Voicing& v, const Settings& s, char* out, int outSize) {
     if (out == nullptr || outSize <= 0) return;
     out[0] = '\0';
     if (v.chordRootPc < 0) return;
 
     const char* root = pitchClassName(v.chordRootPc);
+
+    if (v.customVoicing) {
+        // No fixed chord type to spell against -- name the root followed by
+        // whichever of its own tones the voicing actually contains, so this
+        // is always correct rather than guessed.
+        char body[96] = {};
+        size_t used = 0;
+        bool seen[12] = {};
+        for (int i = 0; i < v.count; ++i) {
+            const int pc = pitchClass(v.notes[i] - v.chordRootPc);
+            if (seen[pc]) continue;
+            seen[pc] = true;
+            const char* name = intervalName(pc);
+            const size_t len = std::strlen(name);
+            if (used + len + 2 >= sizeof(body)) break;
+            if (used > 0) body[used++] = ' ';
+            std::memcpy(body + used, name, len);
+            used += len;
+        }
+        body[used] = '\0';
+        std::snprintf(out, static_cast<size_t>(outSize), "%s%s%s", root,
+                     used > 0 ? "  " : "", body);
+        return;
+    }
+
     const int top = s.thirteenth ? 13 : (s.eleventh ? 11 : (s.ninth ? 9 : 7));
 
     char body[24] = {};

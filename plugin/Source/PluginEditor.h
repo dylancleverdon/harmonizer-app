@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "PianoKeyboard.h"
 #include "PluginLook.h"
 #include "PluginProcessor.h"
 #include "PluginUpdater.h"

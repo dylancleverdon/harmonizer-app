@@ -82,16 +82,31 @@ public:
     struct JazzView {
         bool  enabled = false;
         bool  sounding = false;      // a chord is being held up
+        // The real key centre the engine is actually using -- already
+        // includes Keys Transpose, since that control genuinely changes
+        // which key you're in (see keyTransposeSemitones() below), not just
+        // how it's labelled. Print this straight.
         int   keyCentrePc = -1;
         bool  minorKey = false;
         int   scaleDegree = 0;
         int   chordRootPc = -1;
         int   typeIndex = 0;
         int   styleIndex = 0;
+        bool  customVoicing = false;   // named by a custom entry, not the built-in dictionary
+        // Real, measured concert pitch, always -- unlike keyCentrePc, this
+        // never includes any transpose. Audio In Transpose only relabels it
+        // for display (see melodyTransposeSemitones() below); it can't be
+        // "shifted" for real, since it's read from live sound, not a key
+        // press.
         int   melodyNote = -1;
         int   melodyDegree = 1;
         float melodyHz = 0.0f;
         int   heldKeys = 0;
+        // True when the key centre above came from a latch (the toggle, or
+        // the sustain pedal standing in for it) rather than being read live
+        // from currently held keys -- heldKeys can be 0 while this is true.
+        bool  keyLatched = false;
+        bool  sustainHeld = false;   // the sustain pedal (CC64) is down right now
         int   noteCount = 0;
         int   notes[jazz::kMaxVoicingNotes] = {};
         // The asked-for range was further from the played note than the engine
@@ -100,6 +115,12 @@ public:
         int   windowLow = 0;
         int   windowHigh = 127;
         const char* roman = "";
+        // Display only, for the editor to rename melodyNote with when
+        // printing "You are playing" -- written = concert -
+        // melodyTransposeSemitones. keyCentrePc needs no such step: Keys
+        // Transpose already moved it for real (see above), so the "Key
+        // centre" row prints it straight.
+        int   melodyTransposeSemitones = 0;
     };
     JazzView jazzView() const;
 
@@ -132,10 +153,32 @@ public:
         static constexpr const char* jazzRangeHigh = "jazzRangeHigh";
         static constexpr const char* jazzSmoothness = "jazzSmoothness";
         static constexpr const char* jazzVoices = "jazzVoices";
+        static constexpr const char* jazzVoicesAuto = "jazzVoicesAuto";
         static constexpr const char* jazzShuffle = "jazzShuffle";
         static constexpr const char* jazzDouble = "jazzDouble";
         // One per voicing style, in jazz::Style order.
         static const char* const jazzStyle[jazz::kStyleCount];
+
+        // Two different jobs. jazzTranspose is real: it is added to every
+        // held key before the key names a key centre, so it genuinely
+        // changes what key the chord is built in -- see collectKeys().
+        // jazzTransposeAudioIn is display only: it can never be added to the
+        // live melody note, which is measured from real sound, so it only
+        // renames what the "You are playing" row prints. Separate controls
+        // because a Bb-trumpet melody and a concert-pitch keyboard commonly
+        // need different (or no) transposition at the same time.
+        static constexpr const char* jazzTranspose = "jazzTranspose";
+        static constexpr const char* jazzTransposeAudioIn = "jazzTransposeAudioIn";
+
+        // Freezes the key centre against key releases: once engaged it only
+        // changes on a fresh key press, never a release, so lifting one
+        // finger of a held minor chord can't be misread as "you meant
+        // major" mid-release. See jazzLatchActive_.
+        static constexpr const char* jazzLatchKeys = "jazzLatchKeys";
+
+        // How long a chord change cross-fades instead of snapping -- see
+        // dsp::Params::glideMs. Only applied while jazz mode is on.
+        static constexpr const char* jazzGlideMs = "jazzGlideMs";
 
         // Custom chord dictionary: a user-built alternative to the dictionary
         // baked into JazzVoicer.cpp. Plugin only, and off by default -- with
@@ -144,17 +187,18 @@ public:
         static constexpr const char* jazzCustomOn = "jazzCustomOn";
         static constexpr const char* jazzCustomUseMajor = "jazzCustomUseMajor";
         static constexpr const char* jazzCustomUseMinor = "jazzCustomUseMinor";
-        // One chord type per scale degree, per context. Each entry is always
-        // rooted on the note being played -- that is what guarantees the
-        // played note stays a tone of the chord, the way the built-in
-        // dictionary always promised, without the editor having to enforce it.
-        static const char* const jazzCustomMajorType[12];
-        static const char* const jazzCustomMinorType[12];
+        // Each scale degree's custom entry is an explicit voicing: up to
+        // jazz::kMaxVoicingNotes semitone-offset "slots", per context. Each
+        // entry is always rooted on the note being played -- that is what
+        // guarantees the played note stays a tone of the chord, the way the
+        // built-in dictionary always promised, without the editor having to
+        // enforce it. IDs are generated rather than hand-written: 2 contexts
+        // x 12 degrees x jazz::kMaxVoicingNotes slots is too many to list.
+        static juce::String jazzCustomOffsetId(bool minor, int degree, int slot);
     };
 
     static const juce::StringArray kFftChoices;
     static const juce::StringArray kJazzStyleNames;
-    static const juce::StringArray kJazzCustomTypeNames;   // "Maj7", "Dom7" ...
 
     /**
      * Custom chord dictionaries saved as named presets, independent of the
@@ -168,6 +212,67 @@ public:
     bool saveJazzDictionaryPreset(const juce::String& name) const;
     bool loadJazzDictionaryPreset(const juce::String& name);
     bool deleteJazzDictionaryPreset(const juce::String& name) const;
+
+    /**
+     * Custom voicing editing, for the keyboard editor in the Jazz page. All
+     * message thread only, like every other editor-to-processor parameter
+     * write -- the audio thread only ever reads the settled result through
+     * jazzSettings().
+     */
+    jazz::CustomEntry jazzCustomEntry(bool minor, int degree) const;
+    void setJazzCustomVoicingNote(bool minor, int degree, int semitoneOffset, bool on);
+    void clearJazzCustomVoicing(bool minor, int degree);
+
+    /** Copies one degree's voicing onto another (or into the other context),
+     *  transposed by the semitone distance between the two degrees -- "copy
+     *  this chord to a different note and shift it up or down." Overwrites
+     *  whatever the destination had. */
+    void copyJazzCustomVoicing(bool fromMinor, int fromDegree, bool toMinor, int toDegree);
+
+    /** Copies every degree from one context onto the other, degree for
+     *  degree -- no transposition, since major and minor already share the
+     *  same twelve scale degrees. The way to reuse a table built for one
+     *  context as a starting point for the other. */
+    void copyJazzCustomTable(bool fromMinor, bool toMinor);
+
+    /**
+     * Record mode: while active, incoming MIDI note-ons are diverted from
+     * their usual jobs (naming a key centre, or playing straight through)
+     * into a capture buffer instead, exactly like clicking notes on the
+     * keyboard editor but played on a real controller. Starting clears
+     * whatever was captured before; stopping leaves the buffer alone, so a
+     * "Save" button can commit it afterwards. Notes are absolute MIDI note
+     * numbers, on the same middle-C-as-root convention the keyboard editor
+     * itself uses -- the editor is what turns them into offsets.
+     */
+    void setJazzCustomRecording(bool active);
+    bool jazzCustomRecording() const { return jazzRecordActive_.load(); }
+    juce::Array<int> jazzCustomRecordedNotes() const;
+    void clearJazzCustomRecordedNotes();
+
+    struct MidiImportSummary {
+        bool ok = false;
+        juce::String error;
+        int keySegments = 0;
+        int chordsAnalyzed = 0;
+        int degreesFilled = 0;
+    };
+
+    /**
+     * Finds the key centre(s) and chords in a .mid file and replaces the
+     * whole custom dictionary with what it found -- the same result running
+     * the keyboard editor by hand would give, for as much of the twelve
+     * degrees (each context) as the file gave evidence for. A degree the
+     * file never touched is left blank, falling back to the built-in
+     * dictionary the same way an unfilled hand-built entry does.
+     */
+    MidiImportSummary importJazzCustomDictionaryFromMidiFile(const juce::File& file);
+
+    /** How a custom voicing's semitone offsets are packed into an
+     *  AudioParameterInt: 0 means "unused", everything else maps onto
+     *  -jazz::kMaxCustomOffset..+jazz::kMaxCustomOffset. */
+    static int jazzCustomOffsetToRaw(int semitoneOffset);
+    static int jazzCustomRawToOffset(int raw);
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -222,24 +327,79 @@ private:
     std::atomic<float>* pJazzRangeHigh_ = nullptr;
     std::atomic<float>* pJazzSmoothness_ = nullptr;
     std::atomic<float>* pJazzVoices_ = nullptr;
+    std::atomic<float>* pJazzVoicesAuto_ = nullptr;
     std::atomic<float>* pJazzShuffle_ = nullptr;
     std::atomic<float>* pJazzDouble_ = nullptr;
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};
+    std::atomic<float>* pJazzTranspose_ = nullptr;
+    std::atomic<float>* pJazzTransposeAudioIn_ = nullptr;
+    std::atomic<float>* pJazzLatchKeys_ = nullptr;
+    std::atomic<float>* pJazzGlideMs_ = nullptr;
 
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
     std::atomic<float>* pJazzCustomUseMinor_ = nullptr;
-    std::atomic<float>* pJazzCustomMajorType_[12] = {};
-    std::atomic<float>* pJazzCustomMinorType_[12] = {};
+    // [context: 0 = major, 1 = minor][degree 0..11][slot 0..kMaxVoicingNotes)
+    std::atomic<float>* pJazzCustomOffset_[2][12][jazz::kMaxVoicingNotes] = {};
 
-    /** Sets a parameter by id from the message thread -- used by preset load,
-     *  which has to write many parameters at once outside of any UI control. */
-    void setParamValue(const char* id, float rawValue);
+    // Record mode's capture buffer -- see setJazzCustomRecording(). Written
+    // only from the audio thread, read from the message thread by the editor.
+    std::atomic<bool> jazzRecordActive_{false};
+    std::atomic<int> jazzRecordNotes_[jazz::kMaxVoicingNotes];
+    void addJazzCustomRecordedNote(int note);
+
+    /** Sets a parameter by id from the message thread -- used by preset load
+     *  and by the custom voicing editor, both of which write parameters
+     *  outside of any bound UI control. */
+    void setParamValue(const juce::String& id, float rawValue);
+
+    // --- key latch and sustain --------------------------------------------
+    // Latch (the toggle, or the sustain pedal standing in for it while held)
+    // freezes the key centre against releases. It is only ever written from
+    // a fresh key press -- see the note-on handling in processBlock() -- so
+    // a release can never change it, which is the whole point: lifting one
+    // finger of a held minor chord should never read as "you meant major".
+    bool jazzLatchActive_ = false;   // has anything been captured yet
+    int  jazzLatchedKeyPc_ = 0;
+    bool jazzLatchedMinor_ = false;
+    // CC64 (sustain pedal), independent of jazzOn. Atomic only because
+    // jazzView() (message thread) reads it for the status panel; every write
+    // is from the audio thread.
+    std::atomic<bool> jazzSustainHeld_{false};
+
+    /** Currently held keys, in ascending order and already shifted by Keys
+     *  Transpose -- what every reading of hostKeyDown_ should use instead of
+     *  walking the raw array by hand, so latch capture and the live reading
+     *  in jazzUpdate() never disagree about what transpose did to them. The
+     *  shift is real, not a label: a player who holds a familiar key while
+     *  reading a transposing instrument's chart is naming a different key
+     *  centre on purpose, and the chord the engine builds actually moves
+     *  with it. Never applied to the melody note, which is read from live
+     *  audio -- it stays whatever it really is; see melodyTransposeSemitones()
+     *  for how that side gets relabelled instead, purely for display. */
+    int collectKeys(int* keys, int maxKeys) const;
+
+    /** Keys Transpose (added to every held key before it names a key centre
+     *  -- see collectKeys()) and Audio In Transpose (display only: how the
+     *  editor renames the live melody note, since it can never be shifted
+     *  for real). Independent controls, independent values. */
+    int keyTransposeSemitones() const;
+    int melodyTransposeSemitones() const;
+
+    /** Captures a fresh latch from a set of keys (concert pitch) --
+     *  lowest key names the centre, two or more means minor. */
+    void latchKeysFrom(const int* keys, int count);
 
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as
     bool hostKeyDown_[128] = {};             // keys the host is holding
-    bool jazzSounding_[128] = {};            // notes we are holding up ourselves
+
+    // The notes we are currently holding up ourselves, ascending, as jazzApply()
+    // last set them -- not a per-note flag, because glide's voice convergence
+    // can legitimately leave two different voices sounding the same note
+    // (each its own engine slot), which a 128-entry bool array can't represent.
+    int jazzVoiceNotes_[jazz::kMaxVoicingNotes] = {};
+    int jazzVoiceCount_ = 0;
     int  jazzKeyVelocity_ = 100;
     int  jazzDecisionCountdown_ = 0;         // samples until the next decision
     int  jazzCandidateNote_ = -1;
@@ -250,7 +410,10 @@ private:
     // Read by the editor; see JazzView.
     std::atomic<bool>  jvSounding_{false};
     std::atomic<int>   jvKeyCentre_{-1}, jvDegree_{0}, jvRoot_{-1}, jvType_{0}, jvStyle_{0};
+    std::atomic<bool>  jvCustomVoicing_{false};
     std::atomic<int>   jvMelodyNote_{-1}, jvMelodyDegree_{1}, jvCount_{0}, jvHeldKeys_{0};
+    std::atomic<bool>  jvKeyLatched_{false};
+    std::atomic<bool>  jvSustainHeld_{false};
     std::atomic<bool>  jvMinor_{false}, jvLimited_{false};
     std::atomic<int>   jvWindowLow_{0}, jvWindowHigh_{127};
     std::atomic<float> jvMelodyHz_{0.0f};

@@ -774,6 +774,126 @@ static void benchmark() {
     }
 }
 
+// Glide is per-voice pitch portamento, driven directly rather than through
+// MIDI: retargetVoiceNote() moves a sounding voice to a new note in place,
+// and its pitch slews there over Params::glideMs instead of snapping. Gain
+// is untouched either way -- there is no fade, click, or dip, just a moving
+// pitch. spawnVoiceFromNote() is the same idea for a voice that has to
+// originate from another one's current pitch rather than already existing.
+static void testGlideRetarget() {
+    printf("\n-- Glide: retargetVoiceNote pitch-glides a sounding voice --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+    const double c4 = 261.63, c5 = 523.25;   // MIDI 60 and 72
+
+    // Settles a voice on C4, retargets it to C5 under the given glide, then
+    // renders `afterSeconds` more and measures the dominant frequency in the
+    // tail of that render.
+    const auto measure = [&](float glideMs, double afterSeconds, bool useTail) {
+        Harmonizer h;
+        h.prepare(sr, 192);
+        h.params().harmonyMode.store(static_cast<int>(HarmonyMode::Absolute));
+        h.params().formantCorrection.store(false);
+        h.params().wetDry.store(1.0f);
+
+        noteOn(h, 60);
+        std::vector<float> settle(static_cast<size_t>(sr * 0.3));
+        makeVoice(settle, f0, sr);
+        run(h, settle, 192);
+
+        h.params().glideMs.store(glideMs);
+        const bool retargeted = h.retargetVoiceNote(60, 72);
+
+        std::vector<float> after(static_cast<size_t>(sr * afterSeconds));
+        makeVoice(after, f0, sr);
+        std::vector<float> out = run(h, after, 192);
+
+        const size_t window = std::min<size_t>(out.size(), static_cast<size_t>(sr * 0.05));
+        const size_t start = useTail ? out.size() - window : 0;
+        return std::make_pair(retargeted,
+                              dominantFreq(out.data() + start, static_cast<int>(window), sr));
+    };
+
+    const auto [ok1, immediate] = measure(0.0f, 0.05, false);
+    check(ok1, "retargetVoiceNote finds the voice currently sounding the old note");
+    check(std::fabs(centsErr(immediate, c5)) < 80.0,
+          "with no glide, the very first moment after retargeting is already on the new note");
+
+    const auto [ok2, soon] = measure(400.0f, 0.05, false);
+    check(ok2, "retargetVoiceNote finds the voice with glide set too");
+    check(std::fabs(centsErr(soon, c4)) < std::fabs(centsErr(soon, c5)),
+          "with a 400 ms glide, that same first moment is still nearer the old note than the new one");
+
+    const auto [ok3, arrived] = measure(400.0f, 2.0, true);
+    check(ok3, "retargetVoiceNote finds the voice for the long-window measurement");
+    check(std::fabs(centsErr(arrived, c5)) < 80.0,
+          "and given enough time (five time constants), the glide arrives at the new note");
+
+    // A note that was never sounding has nothing to retarget.
+    Harmonizer empty;
+    empty.prepare(sr, 192);
+    check(!empty.retargetVoiceNote(60, 72), "retargeting a note that is not sounding does nothing");
+}
+
+static void testGlideSpawn() {
+    printf("\n-- Glide: spawnVoiceFromNote splits a voice in two --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+    const double c4 = 261.63, e4 = 329.63, g4 = 392.00;   // MIDI 60, 64, 67
+
+    Harmonizer h;
+    h.prepare(sr, 192);
+    h.params().harmonyMode.store(static_cast<int>(HarmonyMode::Absolute));
+    h.params().formantCorrection.store(false);
+    h.params().wetDry.store(1.0f);
+    h.params().glideMs.store(300.0f);
+
+    noteOn(h, 60);   // C4
+    std::vector<float> settle(static_cast<size_t>(sr * 0.3));
+    makeVoice(settle, f0, sr);
+    run(h, settle, 192);
+    check(h.metrics().activeVoices == 1, "one voice sounding before the split");
+
+    const bool spawned = h.spawnVoiceFromNote(60, 67, 0.9f);   // split off a fifth, gliding to G4
+    check(spawned, "spawnVoiceFromNote reports success");
+
+    std::vector<float> justAfter(static_cast<size_t>(sr * 0.05));
+    makeVoice(justAfter, f0, sr);
+    auto outSoon = run(h, justAfter, 192);
+    check(h.metrics().activeVoices == 2, "spawning adds a second active voice");
+    const auto specSoon = analyse(outSoon.data(), static_cast<int>(outSoon.size()), sr);
+    check(relLevelNear(specSoon, c4) > 0.2,
+          "the original voice is still there right after the split");
+    check(relLevelNear(specSoon, c4, 200.0) > relLevelNear(specSoon, g4, 200.0),
+          "the split voice starts out audibly near the source pitch, not the target");
+
+    std::vector<float> later(static_cast<size_t>(sr * 2.0));
+    makeVoice(later, f0, sr);
+    auto outLater = run(h, later, 192);
+    const size_t tail = std::min<size_t>(outLater.size(), static_cast<size_t>(sr * 0.2));
+    const auto specLater =
+        analyse(outLater.data() + (outLater.size() - tail), static_cast<int>(tail), sr);
+    check(relLevelNear(specLater, c4) > 0.2, "the original voice is still sounding once settled");
+    check(relLevelNear(specLater, g4) > 0.2,
+          "and the split voice has arrived at its own target pitch");
+
+    // No source to split from: lands on pitch immediately, same as an
+    // ordinary fresh voice, rather than gliding up from nothing.
+    Harmonizer fresh;
+    fresh.prepare(sr, 192);
+    fresh.params().harmonyMode.store(static_cast<int>(HarmonyMode::Absolute));
+    fresh.params().formantCorrection.store(false);
+    fresh.params().wetDry.store(1.0f);
+    fresh.params().glideMs.store(300.0f);
+    check(fresh.spawnVoiceFromNote(-1, 64, 0.9f), "spawning with no source still succeeds");
+    std::vector<float> freshVoiced(static_cast<size_t>(sr * 0.05));
+    makeVoice(freshVoiced, f0, sr);
+    auto freshOut = run(fresh, freshVoiced, 192);
+    const double freshFreq = dominantFreq(freshOut.data(), static_cast<int>(freshOut.size()), sr);
+    check(std::fabs(centsErr(freshFreq, e4)) < 80.0,
+          "a spawn with no source lands directly on its target pitch");
+}
+
 int main() {
     printf("=============================================\n");
     printf(" Harmoniser DSP validation\n");
@@ -792,6 +912,8 @@ int main() {
     testSmallestWindow();
     testChordVoicing();
     testAnchorDegree();
+    testGlideRetarget();
+    testGlideSpawn();
     benchmark();
 
     printf("\n=============================================\n");

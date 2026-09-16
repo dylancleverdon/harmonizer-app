@@ -67,6 +67,8 @@ target_sources(HarmonizerPlugin PRIVATE
         Source/PluginEditor.cpp
         Source/PluginUpdater.cpp
         Source/JazzVoicer.cpp
+        Source/JazzMidiImport.cpp
+        Source/PianoKeyboard.cpp
         Shared/HarmonizerInstall.cpp
         ${DSP_DIR}/Fft.cpp
         ${DSP_DIR}/Resampler.cpp
@@ -119,6 +121,8 @@ if(HARMONIZER_BUILD_TESTS)
             Source/PluginEditor.cpp
             Source/PluginUpdater.cpp
             Source/JazzVoicer.cpp
+            Source/JazzMidiImport.cpp
+            Source/PianoKeyboard.cpp
             Shared/HarmonizerInstall.cpp
             ${DSP_DIR}/Fft.cpp
             ${DSP_DIR}/Resampler.cpp
@@ -154,7 +158,8 @@ if(HARMONIZER_BUILD_TESTS)
     # musical regression is findable without reading past a plugin host.
     add_executable(HarmonizerJazzTest
             Tests/JazzHarness.cpp
-            Source/JazzVoicer.cpp)
+            Source/JazzVoicer.cpp
+            Source/JazzMidiImport.cpp)
     target_include_directories(HarmonizerJazzTest PRIVATE Source)
     target_compile_features(HarmonizerJazzTest PRIVATE cxx_std_17)
 endif()
