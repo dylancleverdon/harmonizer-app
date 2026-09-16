@@ -136,10 +136,38 @@ public:
         static constexpr const char* jazzDouble = "jazzDouble";
         // One per voicing style, in jazz::Style order.
         static const char* const jazzStyle[jazz::kStyleCount];
+
+        // Custom chord dictionary: a user-built alternative to the dictionary
+        // baked into JazzVoicer.cpp. Plugin only, and off by default -- with
+        // it off, or with both context toggles below off, jazz mode is
+        // exactly what it always was.
+        static constexpr const char* jazzCustomOn = "jazzCustomOn";
+        static constexpr const char* jazzCustomUseMajor = "jazzCustomUseMajor";
+        static constexpr const char* jazzCustomUseMinor = "jazzCustomUseMinor";
+        // One chord type per scale degree, per context. Each entry is always
+        // rooted on the note being played -- that is what guarantees the
+        // played note stays a tone of the chord, the way the built-in
+        // dictionary always promised, without the editor having to enforce it.
+        static const char* const jazzCustomMajorType[12];
+        static const char* const jazzCustomMinorType[12];
     };
 
     static const juce::StringArray kFftChoices;
     static const juce::StringArray kJazzStyleNames;
+    static const juce::StringArray kJazzCustomTypeNames;   // "Maj7", "Dom7" ...
+
+    /**
+     * Custom chord dictionaries saved as named presets, independent of the
+     * host's own session state -- so a dictionary built for one project can
+     * be brought into another rather than living only in that project's file.
+     * All of these touch the filesystem and parameters, so they are message
+     * thread only, called from the editor.
+     */
+    static juce::File jazzDictionaryPresetDirectory();
+    juce::StringArray jazzDictionaryPresetNames() const;
+    bool saveJazzDictionaryPreset(const juce::String& name) const;
+    bool loadJazzDictionaryPreset(const juce::String& name);
+    bool deleteJazzDictionaryPreset(const juce::String& name) const;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -197,6 +225,16 @@ private:
     std::atomic<float>* pJazzShuffle_ = nullptr;
     std::atomic<float>* pJazzDouble_ = nullptr;
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};
+
+    std::atomic<float>* pJazzCustomOn_ = nullptr;
+    std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
+    std::atomic<float>* pJazzCustomUseMinor_ = nullptr;
+    std::atomic<float>* pJazzCustomMajorType_[12] = {};
+    std::atomic<float>* pJazzCustomMinorType_[12] = {};
+
+    /** Sets a parameter by id from the message thread -- used by preset load,
+     *  which has to write many parameters at once outside of any UI control. */
+    void setParamValue(const char* id, float rawValue);
 
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as

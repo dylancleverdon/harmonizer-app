@@ -118,6 +118,38 @@ you would rather not think about it. **Shuffle** varies which of the chosen
 styles a new chord gets instead of always taking the highest-scoring one — it
 only ever picks from what you selected, and never mid-chord.
 
+### Custom chord dictionary
+
+The built-in dictionary above is fixed -- twelve degrees, one chord each, hand
+picked for functional harmony. The **Custom chord dictionary** card at the
+bottom of the Jazz page is a second dictionary you build yourself, in its
+place.
+
+For each of the twelve notes of the key you can pick which chord type plays
+when you play it -- **Maj7**, **Dom7**, **Dom7 alt** (the altered dominant,
+b9/#11/b13), **Min7**, **Min7b5** or **Dim7**. The chord is always rooted on
+the note you actually play, so the one rule the built-in dictionary never
+breaks holds here too without anything having to enforce it: you are always a
+tone of the chord, its root. It is written once in terms of the key centre,
+the same way the built-in dictionary is, so building it once already covers
+all twelve keys -- naming a key centre just transposes it.
+
+Major and minor are separate, independent toggles. Leaving one off keeps the
+**built-in** dictionary for that context, so a custom table built only for
+major still gives you the ordinary minor chords the moment a second key is
+held. Turning the whole card off (or leaving both toggles off) is the way
+back to how jazz mode has always worked -- not a one-way door. Everything
+else about jazz mode -- extensions, octave and inversion, range, voice
+leading and voicing style -- still applies on top of whichever dictionary
+answers the lookup, custom or built-in.
+
+Custom dictionaries can be saved as named **presets** under the card below it,
+independent of any particular DAW project -- a dictionary built for one song
+can be loaded into another. They are stored under
+`~/Library/Application Support/Harmonizer/JazzDictionaryPresets` on macOS (the
+platform-equivalent app-data folder elsewhere) as one small XML file per
+preset. Loading a preset switches the custom dictionary on.
+
 ### How it is put together
 
 The dictionary and the voicer are `plugin/Source/JazzVoicer.{h,cpp}`: integer
@@ -128,7 +160,10 @@ from the engine's own tracker, asks the voicer for a chord when the pitch has
 held still for about 15 ms, and feeds the result to the engine as MIDI in
 absolute-pitch mode. Notes common to the old chord and the new one are left
 alone rather than retriggered, so a held common tone really does sustain through
-the change.
+the change. The custom dictionary lives in the same `Settings`/`Voicer` pair as
+everything else in jazz mode -- it is a per-context override of the lookup,
+not a separate code path -- and presets are a small XML file per name, read
+and written by `PluginProcessor` on the message thread only.
 
 ## Updating
 

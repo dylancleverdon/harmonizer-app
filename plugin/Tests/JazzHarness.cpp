@@ -559,6 +559,107 @@ int main() {
         }
     }
 
+    // --- A custom dictionary is a per-context override, not a separate mode:
+    // off (the default) has to leave the built-in dictionary untouched, and
+    // leaving one context off has to leave that context's built-in chords
+    // untouched too.
+    std::printf("\n-- Custom chord dictionary --\n");
+    {
+        auto s = defaults();
+        const int keys[] = {60};       // C major
+        const int melody = 62;         // D -> iim7 built in
+
+        jazz::Voicer plain;
+        jazz::Voicing before;
+        check(plain.update(keys, 1, melody, s, before), "built-in dictionary voices D over C");
+        checkf(before.chordRootPc == 2 && std::string(before.roman) == "iim7",
+               "before any custom dictionary exists, D over C is %s%s",
+               jazz::pitchClassName(before.chordRootPc), before.roman);
+
+        // A dictionary that has been filled in but not switched on changes
+        // nothing at all -- that is how you get back to how it always was.
+        for (auto& e : s.customDict.major) e.type = jazz::ChordType::Dom7;
+        s.customDict.useMajor = true;
+        jazz::Voicer stillOff;
+        jazz::Voicing offResult;
+        stillOff.update(keys, 1, melody, s, offResult);
+        checkf(offResult.chordRootPc == before.chordRootPc &&
+                   std::string(offResult.roman) == before.roman,
+               "a filled-in dictionary that is not switched on changes nothing (%s%s)",
+               jazz::pitchClassName(offResult.chordRootPc), offResult.roman);
+
+        // Switched on, it overrides the degree it was built for -- always
+        // rooted on the note played, D, rather than the built-in's root.
+        s.useCustomDictionary = true;
+        jazz::Voicer custom;
+        jazz::Voicing after;
+        check(custom.update(keys, 1, melody, s, after), "the custom entry voices too");
+        checkf(after.chordRootPc == 2 && after.type == jazz::ChordType::Dom7,
+               "custom major degree 2 -> root %s, %s", jazz::pitchClassName(after.chordRootPc),
+               jazz::styleName(after.style));
+        checkf(std::string(after.roman) == "II7", "custom entry is named like the built-in ones: %s",
+               after.roman);
+
+        // The played note is still a tone of whatever chord the custom
+        // dictionary names -- the one contract that never gets to break.
+        const auto customPcs = chordPitchClasses(after, s);
+        check(contains(customPcs, pitchClass(melody)),
+              "the played note is still a tone of the custom chord");
+
+        // That holds for every degree and every chord type a custom entry
+        // could be given, in both major and minor -- not just the one case
+        // above. Since a custom entry is always rooted on the played note,
+        // this is really checking that the rooting rule itself is applied
+        // consistently, in every key.
+        {
+            int misses = 0;
+            for (int keyPc = 0; keyPc < 12; ++keyPc) {
+                for (int minorCtx = 0; minorCtx < 2; ++minorCtx) {
+                    auto cs = defaults();
+                    cs.useCustomDictionary = true;
+                    if (minorCtx) cs.customDict.useMinor = true; else cs.customDict.useMajor = true;
+                    for (int degree = 0; degree < 12; ++degree) {
+                        const auto t = static_cast<jazz::ChordType>(
+                            degree % static_cast<int>(jazz::ChordType::Count));
+                        (minorCtx ? cs.customDict.minor[degree] : cs.customDict.major[degree]).type = t;
+                    }
+                    const int ks[2] = {48 + keyPc, 48 + keyPc + 7};
+                    for (int degree = 0; degree < 12; ++degree) {
+                        jazz::Voicer v2;
+                        jazz::Voicing out2;
+                        const int mel = 60 + keyPc + degree;
+                        if (!v2.update(ks, minorCtx ? 2 : 1, mel, cs, out2)) { ++misses; continue; }
+                        if (!contains(chordPitchClasses(out2, cs), pitchClass(mel))) ++misses;
+                    }
+                }
+            }
+            checkf(misses == 0,
+                   "every custom entry in every key, major and minor, keeps the played note "
+                   "(%d misses)", misses);
+        }
+
+        // Minor was never turned on, so two keys still get the built-in minor
+        // dictionary rather than silently reusing the major table.
+        const int minorKeys[] = {60, 67};   // C, G -> C minor
+        jazz::Voicer minorVoicer;
+        jazz::Voicing minorResult;
+        minorVoicer.update(minorKeys, 2, 62, s, minorResult);   // D over Cm -> iim7b5 built in
+        checkf(minorResult.type == jazz::ChordType::Min7b5,
+               "minor left off still uses the built-in minor dictionary (got %s)",
+               jazz::styleName(minorResult.style));
+
+        // Turning the whole thing back off is the way back to how jazz mode
+        // has always behaved -- not a one-way door.
+        s.useCustomDictionary = false;
+        jazz::Voicer restored;
+        jazz::Voicing restoredResult;
+        restored.update(keys, 1, melody, s, restoredResult);
+        checkf(restoredResult.chordRootPc == before.chordRootPc &&
+                   std::string(restoredResult.roman) == before.roman,
+               "switching the dictionary back off restores %s (got %s%s)", before.roman,
+               jazz::pitchClassName(restoredResult.chordRootPc), restoredResult.roman);
+    }
+
     std::printf("\n=============================================\n");
     if (g_failures == 0) std::printf(" ALL JAZZ CHECKS PASSED\n");
     else std::printf(" %d CHECK(S) FAILED\n", g_failures);

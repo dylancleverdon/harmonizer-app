@@ -458,6 +458,104 @@ static void testJazzChordMode() {
     }
 }
 
+// The custom chord dictionary is a plugin-only layer over jazz mode's own
+// chords: off by default (jazz mode is unchanged), and switched on it hands
+// the chosen chord type straight through the engine the same way the
+// built-in dictionary always has. Presets are a small file-backed library on
+// top of that, independent of host session state.
+static void testJazzCustomDictionary() {
+    std::printf("\n-- Jazz custom chord dictionary --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;   // A3, MIDI 57
+
+    // Holds C (60) for the whole render and plays A3 (57) into the input --
+    // scale degree 9 above C, the sixth.
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
+    setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 4);  // Min7b5
+
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    const int total = static_cast<int>(sr * 1.5);
+    std::vector<float> source(static_cast<size_t>(total));
+    makeVoice(source, f0, sr);
+    juce::AudioBuffer<float> buffer(1, 256);
+    bool sent = false;
+    for (int pos = 0; pos < total; pos += 256) {
+        const int n = juce::jmin(256, total - pos);
+        buffer.setSize(1, n, false, false, true);
+        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+        juce::MidiBuffer midi;
+        if (!sent) { midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); sent = true; }
+        p.processBlock(buffer, midi);
+    }
+    const auto v = p.jazzView();
+    check(v.sounding && v.chordRootPc == 9 && v.typeIndex == static_cast<int>(jazz::ChordType::Min7b5) &&
+              v.melodyNote == 57 && v.melodyDegree == 1,
+          juce::String("C held, A3 played, custom A degree set to Min7b5 -> root ") +
+              (v.chordRootPc >= 0 ? jazz::pitchClassName(v.chordRootPc) : "?") + " " + v.roman +
+              ", you are the " + jazz::degreeName(v.melodyDegree));
+
+    // Minor was never turned on for the custom dictionary, so two keys still
+    // fall back to the ordinary built-in minor dictionary rather than reusing
+    // the major table or going silent.
+    {
+        HarmonizerAudioProcessor minorP;
+        setValue(minorP, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(minorP, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(minorP, HarmonizerAudioProcessor::ParamId::jazzCustomOn, 1.0f);
+        setValue(minorP, HarmonizerAudioProcessor::ParamId::jazzCustomUseMajor, 1.0f);
+        minorP.setPlayConfigDetails(1, 1, sr, 256);
+        minorP.prepareToPlay(sr, 256);
+
+        std::vector<float> src2(static_cast<size_t>(total));
+        makeVoice(src2, f0, sr);
+        juce::AudioBuffer<float> buf2(1, 256);
+        bool sent2 = false;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buf2.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buf2.getWritePointer(0), src2.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent2) {
+                for (int note : {69, 76}) midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.8f), 0);
+                sent2 = true;
+            }
+            minorP.processBlock(buf2, midi);
+        }
+        const auto mv = minorP.jazzView();
+        check(mv.sounding && mv.minorKey && mv.typeIndex == static_cast<int>(jazz::ChordType::Min7),
+              juce::String("A/E held (minor), custom major on but minor off -> built-in im7 (got ") +
+                  mv.roman + ")");
+    }
+
+    // Presets: a save/load/delete round trip through the small file-backed
+    // library, independent of host session state.
+    {
+        const juce::String name = "__harmonizer_test_preset__";
+        p.deleteJazzDictionaryPreset(name);   // clean slate if a previous run left one
+
+        check(p.saveJazzDictionaryPreset(name), "a named preset saves");
+        check(p.jazzDictionaryPresetNames().contains(name), "it shows up in the preset list");
+
+        // Change the live dictionary, then load the preset back over it.
+        setChoice(p, HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9], 0);  // Maj7
+        check(p.loadJazzDictionaryPreset(name), "the preset loads");
+        const float loadedBack = *p.apvts.getRawParameterValue(
+            HarmonizerAudioProcessor::ParamId::jazzCustomMajorType[9]);
+        check(juce::roundToInt(loadedBack) == 4,
+              juce::String("loading the preset restores the saved chord type (got ") +
+                  juce::String(juce::roundToInt(loadedBack)) + ")");
+
+        check(p.deleteJazzDictionaryPreset(name), "the preset deletes");
+        check(!p.jazzDictionaryPresetNames().contains(name), "and is gone from the list");
+    }
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("=============================================\n");
@@ -596,6 +694,7 @@ int main() {
     testSidechainInput();
     testSilentMainBusDoesNotAttenuate();
     testJazzChordMode();
+    testJazzCustomDictionary();
 
     std::printf("\n=============================================\n");
     if (g_failures == 0) std::printf(" ALL PLUGIN CHECKS PASSED\n");

@@ -72,6 +72,17 @@ constexpr DictEntry kMinorDict[12] = {
     /*  7  */ { 7, ChordType::Dom7b9, "V7b9"     },   // played note: the third
 };
 
+// Interval names for a root offset on its own, upper and lower case. The
+// dictionary above picks between them by hand to show a chord's quality
+// (lowercase for a minor-quality chord); the custom dictionary does the same
+// thing at runtime, since its chord type is only known once someone picks it.
+constexpr const char* kOffsetRomanUpper[12] = {
+    "I", "bII", "II", "bIII", "III", "IV", "#IV", "V", "bVI", "VI", "bVII", "VII"
+};
+constexpr const char* kOffsetRomanLower[12] = {
+    "i", "bii", "ii", "biii", "iii", "iv", "#iv", "v", "bvi", "vi", "bvii", "vii"
+};
+
 // --- small helpers ----------------------------------------------------------
 
 int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -132,6 +143,26 @@ ToneSet buildTones(ChordType type, const Settings& s) {
     if (s.eleventh)   add(spec.eleventh, 11);
     if (s.thirteenth) add(spec.thirteenth, 13);
     return t;
+}
+
+/** "iim7", "bIImaj7", "V7b9" ... for a custom entry, in the same style the
+ *  built-in dictionary is written in by hand. */
+void buildCustomRoman(int rootOffset, ChordType type, char* out, int outSize) {
+    const bool lower = (type == ChordType::Min7 || type == ChordType::Min7b5 ||
+                        type == ChordType::Dim7);
+    const char* base = (lower ? kOffsetRomanLower : kOffsetRomanUpper)[clampi(rootOffset, 0, 11)];
+    const char* suffix = "dim7";
+    switch (type) {
+        case ChordType::Maj7:   suffix = "maj7"; break;
+        case ChordType::Dom7:   suffix = "7";    break;
+        case ChordType::Dom7b9: suffix = "7b9";  break;
+        case ChordType::Min7:   suffix = "m7";   break;
+        case ChordType::Min7b5: suffix = "m7b5"; break;
+        case ChordType::Dim7:
+        case ChordType::Count:
+        default: break;
+    }
+    std::snprintf(out, static_cast<size_t>(outSize), "%s%s", base, suffix);
 }
 
 /** Which chord degree a pitch class is, given the chord -- for the readout. */
@@ -315,10 +346,30 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     const int keyPc = pitchClass(lowestKey);
     const int degree = pitchClass(melodyNote - lowestKey);
 
-    const DictEntry& entry = (minor ? kMinorDict : kMajorDict)[degree];
-    const int rootPc = (keyPc + entry.rootOffset) % 12;
-    const ChordType type = entry.type;
+    // The built-in dictionary is the default answer; a custom one only
+    // overrides it context by context (major, minor), so a custom table built
+    // for major alone still leaves the minor side exactly as it always was.
+    const DictEntry& builtIn = (minor ? kMinorDict : kMajorDict)[degree];
+    int rootOffset = builtIn.rootOffset;
+    ChordType type = builtIn.type;
+    const char* roman = builtIn.roman;
 
+    const bool customActive =
+        s.useCustomDictionary && (minor ? s.customDict.useMinor : s.customDict.useMajor);
+    if (customActive) {
+        const CustomEntry& custom = (minor ? s.customDict.minor : s.customDict.major)[degree];
+        // Always rooted on the note being played -- the one rule a custom
+        // entry is not free to break, since it is what guarantees the played
+        // note is a tone of whatever chord comes out.
+        rootOffset = degree;
+        const int typeIndex = clampi(static_cast<int>(custom.type), 0,
+                                     static_cast<int>(ChordType::Count) - 1);
+        type = static_cast<ChordType>(typeIndex);
+        buildCustomRoman(rootOffset, type, customRomanBuf_, sizeof(customRomanBuf_));
+        roman = customRomanBuf_;
+    }
+
+    const int rootPc = (keyPc + rootOffset) % 12;
     const ToneSet tones = buildTones(type, s);
 
     // Guard the range: a window narrower than an octave has nowhere to put a
@@ -532,7 +583,7 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     out.scaleDegree = degree;
     out.chordRootPc = rootPc;
     out.type = type;
-    out.roman = entry.roman;
+    out.roman = roman;
     out.style = bestStyle;
     out.melodyNote = melodyNote;
     out.melodyDegree = degreeOfPitchClass(type, pitchClass(melodyNote - rootPc));
