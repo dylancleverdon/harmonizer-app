@@ -25,10 +25,13 @@ void styleToggle(juce::ToggleButton& b, const juce::String& label) {
 }
 
 void styleCombo(juce::ComboBox& c) {
-    c.setColour(juce::ComboBox::backgroundColourId, look::surfaceVariant);
+    // No reference dropdown ("Factory Default", "Mode: Legacy", "Sweep
+    // Mode: Squared") shows any fill or border -- just text and a chevron
+    // directly on the panel.
+    c.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
     c.setColour(juce::ComboBox::textColourId, look::text);
     c.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
-    c.setColour(juce::ComboBox::arrowColourId, look::accent);
+    c.setColour(juce::ComboBox::arrowColourId, look::text);
 }
 
 /** "1 (root)", "b2", "2" ... the scale degree a row of the custom dictionary
@@ -55,6 +58,27 @@ void styleSmallButton(juce::TextButton& b) {
     b.setColour(juce::TextButton::textColourOnId, look::text);
 }
 
+/** A one-shot header action (Panic) -- plain text, no box at all, matching
+ *  Logic's own borderless Undo/Redo chrome buttons. Read by
+ *  KnobLookAndFeel::drawButtonBackground via a component property so this
+ *  stays opt-in and every other button elsewhere is unaffected. */
+void styleFlatButton(juce::TextButton& b) {
+    b.getProperties().set("flatButton", true);
+    b.setColour(juce::TextButton::textColourOffId, look::text);
+    b.setColour(juce::TextButton::textColourOnId, look::text);
+}
+
+/** A header page-toggle (Jazz/Settings) -- bordered but unfilled by default,
+ *  filling solid accent only while its page is the one currently shown,
+ *  matching Logic's Compare chrome. Same opt-in property mechanism as
+ *  styleFlatButton() above. */
+void styleNavButton(juce::TextButton& b) {
+    b.getProperties().set("navButton", true);
+    b.setColour(juce::TextButton::buttonOnColourId, look::accent);
+    b.setColour(juce::TextButton::textColourOffId, look::muted);
+    b.setColour(juce::TextButton::textColourOnId, look::onAccent);
+}
+
 void styleSlider(juce::Slider& s) {
     s.setSliderStyle(juce::Slider::LinearHorizontal);
     s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 62, 20);
@@ -63,9 +87,9 @@ void styleSlider(juce::Slider& s) {
     // letting the page scroll -- so just moving the mouse down the page while
     // scrolling silently retunes whatever control happens to be underneath.
     s.setScrollWheelEnabled(false);
-    s.setColour(juce::Slider::trackColourId, look::accent);
+    s.setColour(juce::Slider::trackColourId, look::valueGreen);
     s.setColour(juce::Slider::backgroundColourId, look::surfaceVariant);
-    s.setColour(juce::Slider::thumbColourId, look::accent);
+    s.setColour(juce::Slider::thumbColourId, look::valueGreen);
     s.setColour(juce::Slider::textBoxTextColourId, look::text);
     s.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     s.setColour(juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
@@ -157,16 +181,26 @@ int ChipGroup::selectedIndex() const {
     return 0;
 }
 
+void ChipGroup::paint(juce::Graphics& g) {
+    // The group owns the outer border and the dividers between segments --
+    // individual Chips paint no border of their own, so this is the only
+    // outline in the whole control, matching a single continuous strip.
+    g.setColour(look::surfaceVariant);
+    g.drawRect(getLocalBounds().toFloat(), 1.0f);
+    for (int i = 1; i < chips_.size(); ++i) {
+        const auto x = static_cast<float>(chips_[i]->getX());
+        g.drawLine(x, 0.0f, x, static_cast<float>(getHeight()), 1.0f);
+    }
+}
+
 void ChipGroup::resized() {
     if (chips_.isEmpty()) return;
-    const int gap = 6;
-    const int total = getWidth() - gap * (chips_.size() - 1);
-    const int each = total / chips_.size();
+    const int each = getWidth() / chips_.size();
     int x = 0;
     for (int i = 0; i < chips_.size(); ++i) {
         const int w = (i == chips_.size() - 1) ? getWidth() - x : each;
         chips_[i]->setBounds(x, 0, w, getHeight());
-        x += w + gap;
+        x += w;
     }
 }
 
@@ -2138,6 +2172,8 @@ public:
         updates.addRow(buttonRow_, 30);
         buttonRow_.addAndMakeVisible(checkButton_);
         buttonRow_.addAndMakeVisible(installButton_);
+        updateBar_.setColour(juce::ProgressBar::backgroundColourId, look::surfaceVariant);
+        updateBar_.setColour(juce::ProgressBar::foregroundColourId, look::accent);
         buttonRow_.addChildComponent(updateBar_);
         buttonRow_.onResize = [this] {
             checkButton_.setBounds(0, 0, 150, buttonRow_.getHeight());
@@ -2371,17 +2407,19 @@ HarmonizerAudioProcessorEditor::HarmonizerAudioProcessorEditor(HarmonizerAudioPr
     version_.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(version_);
 
-    styleSmallButton(pageButton_);
+    styleNavButton(pageButton_);
+    pageButton_.setComponentID("settingsButton");
     pageButton_.onClick = [this] {
         showPage(page_ == PageId::Settings ? PageId::Main : PageId::Settings);
     };
     addAndMakeVisible(pageButton_);
-    styleSmallButton(jazzButton_);
+    styleNavButton(jazzButton_);
+    jazzButton_.setComponentID("jazzButton");
     jazzButton_.onClick = [this] {
         showPage(page_ == PageId::Jazz ? PageId::Main : PageId::Jazz);
     };
     addAndMakeVisible(jazzButton_);
-    styleSmallButton(panicButton_);
+    styleFlatButton(panicButton_);
     panicButton_.onClick = [this] { processor_.allNotesOff(); };
     addAndMakeVisible(panicButton_);
 
@@ -2410,6 +2448,11 @@ void HarmonizerAudioProcessorEditor::showPage(PageId page) {
     page_ = page;
     pageButton_.setButtonText(page == PageId::Settings ? "Back" : "Settings");
     jazzButton_.setButtonText(page == PageId::Jazz ? "Back" : "Jazz");
+    // Fills the button solid accent while its page is the one showing --
+    // Logic's own "Compare" active-state convention -- on top of the
+    // existing text relabel.
+    pageButton_.setToggleState(page == PageId::Settings, juce::dontSendNotification);
+    jazzButton_.setToggleState(page == PageId::Jazz, juce::dontSendNotification);
 
     juce::Component* view = mainPage_.get();
     if (page == PageId::Jazz) view = jazzPage_.get();

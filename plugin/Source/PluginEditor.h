@@ -20,11 +20,15 @@ protected:
     juce::OwnedArray<look::Card> cards_;
 };
 
-/** Radio row of pill selectors bound to a choice parameter. */
+/** Radio row of pill selectors bound to a choice parameter, drawn as one
+ *  continuous segmented strip -- Logic's own two/three-way selector look
+ *  (LR/MS, Clean/Diffuse) -- rather than a row of individually boxed
+ *  buttons. */
 class ChipGroup final : public juce::Component {
 public:
     ChipGroup(juce::AudioProcessorValueTreeState& state, const juce::String& parameterId,
               const juce::StringArray& labels);
+    void paint(juce::Graphics&) override;
     void resized() override;
     int selectedIndex() const;
 
