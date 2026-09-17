@@ -68,6 +68,7 @@ target_sources(HarmonizerPlugin PRIVATE
         Source/PluginUpdater.cpp
         Source/JazzVoicer.cpp
         Source/JazzChordLibrary.cpp
+        Source/JazzDictionaryFactoryPresets.cpp
         Source/JazzMidiImport.cpp
         Source/PianoKeyboard.cpp
         Shared/HarmonizerInstall.cpp
@@ -123,6 +124,7 @@ if(HARMONIZER_BUILD_TESTS)
             Source/PluginUpdater.cpp
             Source/JazzVoicer.cpp
             Source/JazzChordLibrary.cpp
+            Source/JazzDictionaryFactoryPresets.cpp
             Source/JazzMidiImport.cpp
             Source/PianoKeyboard.cpp
             Shared/HarmonizerInstall.cpp
@@ -162,6 +164,7 @@ if(HARMONIZER_BUILD_TESTS)
             Tests/JazzHarness.cpp
             Source/JazzVoicer.cpp
             Source/JazzChordLibrary.cpp
+            Source/JazzDictionaryFactoryPresets.cpp
             Source/JazzMidiImport.cpp)
     target_include_directories(HarmonizerJazzTest PRIVATE Source)
     target_compile_features(HarmonizerJazzTest PRIVATE cxx_std_17)

@@ -64,7 +64,11 @@ on the main page stand down.
 The idea is that your left hand names a key and your horn does the rest.
 
 * **Hold one key** and that note is a **major** key centre. **Hold two or more**
-  and it is a **minor** key, on the **lowest** key held.
+  and it is a **minor** key, on the **lowest** key held. **Key Quality** (next
+  to Latch key centre) overrides that rule: set it to Major or Minor and a
+  single held key always names that quality, so a minor key centre never
+  needs a second finger down to stay minor. Left on Auto it is exactly the
+  rule above.
 * Whatever you play into the audio input is measured, read as a **scale degree**
   of that key centre, and looked up in a dictionary of jazz chords — one chord
   for each of the twelve degrees, chromatic notes included. Every chord in the
@@ -282,16 +286,31 @@ an older version of this dictionary, back when it picked one of six fixed
 chord types per degree rather than an explicit voicing, still loads -- it is
 converted to the equivalent voicing on the way in.
 
+Above your own saved presets sits **Factory chord dictionaries**: six
+complete, built-in starting points, each an opinionated take on nearly every
+degree rather than one voicing at a time — **Barry Harris** (major 6th
+chords and a passing diminished on every chromatic degree), **Bill Evans**
+(rootless throughout), **Modal** (McCoy Tyner-style stacked fourths and the
+"So What" voicing), **Just the Two of Us** (that tune's own vocabulary, built
+as a movable dictionary so it plays the same in any key), **Robert Glasper**
+(lydian major, dorian minor, sus and backdoor dominants — the neo-soul
+sound), and **Freddie Green** (sparse three-note comping shells). They are
+compiled in rather than saved as files, so there is nothing to install and
+Load is the only thing you can do to one — loading replaces the live custom
+dictionary exactly the way loading a saved preset does, so save your own
+first if you want to keep it.
+
 ### Chord library
 
 Above the custom chord dictionary is a **Chord library** card: a curated,
 browsable set of named voicings — rootless shapes, drop 2 and drop 3,
 quartal fourths, shells, upper-structure triads, spread/open voicings,
-gospel and neo-soul moves, altered and blues dominants, and minor ii-V-i
-cadence shapes — for discovering chords to put into your own dictionaries
-rather than building every voicing from scratch. Filter by **Theme** or by
-**Best over** (which chord quality a voicing suits), then for anything in
-the results:
+gospel and neo-soul moves, altered and blues dominants, minor ii-V-i
+cadence shapes, and a dedicated Robert Glasper-inspired **neo-soul** theme
+(lydian major, dorian minor, sus and backdoor dominants) — for discovering
+chords to put into your own dictionaries rather than building every voicing
+from scratch. Filter by **Theme** or by **Best over** (which chord quality a
+voicing suits), then for anything in the results:
 
 * **Preview** plays it on its own, through a short synthetic tone, so you can
   hear it without having to sing or play anything into the input.

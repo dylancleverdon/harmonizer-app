@@ -28,6 +28,8 @@ enum class LibraryTheme {
     Gospel,           // added 6ths/9ths, sus moves, close bright clusters
     Blues,            // altered and blues-flavoured dominants
     MinorCadence,     // ii-V-i shapes in a minor key
+    NeoSoul,          // Glasper/D'Angelo vocabulary: lydian major, dorian
+                      // minor, sus/backdoor dominants, quartal upper structures
     Count
 };
 inline constexpr int kLibraryThemeCount = static_cast<int>(LibraryTheme::Count);
