@@ -1,5 +1,7 @@
 #include "PianoKeyboard.h"
 
+#include "PluginLook.h"
+
 namespace harmonizer {
 
 namespace {
@@ -103,8 +105,8 @@ void PianoKeyboardComponent::mouseDown(const juce::MouseEvent& e) {
 void PianoKeyboardComponent::paint(juce::Graphics& g) {
     const juce::Colour white = juce::Colour(0xfff2efe9);
     const juce::Colour black = juce::Colour(0xff1a1a1a);
-    const juce::Colour on = juce::Colour(0xffe0b64d);       // an ordinary voiced tone
-    const juce::Colour rootOn = juce::Colour(0xffe0574d);   // the root, apart from the rest
+    const juce::Colour on = look::valueGreen;      // an ordinary voiced tone
+    const juce::Colour rootOn = look::accent;      // the root, apart from the rest
 
     const auto drawKey = [&](const KeyRect& k) {
         const bool isOn = highlighted_.contains(k.note);

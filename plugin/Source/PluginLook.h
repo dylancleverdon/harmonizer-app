@@ -20,6 +20,13 @@ inline const juce::Colour text{0xffd1d1d1};
 inline const juce::Colour muted{0xff555555};
 inline const juce::Colour warn{0xffffb300};
 inline const juce::Colour error{0xffe60000};
+// The colour an actively-set control value is drawn in -- a knob's arc and
+// indicator line, a slider's fill, a meter's normal-range level, a lit
+// voice dot. Every stock Logic plugin checked against this palette (Tape
+// Delay, Phaser, Overdrive, Channel EQ, Limiter, Direction Mixer) uses green
+// for this, never the blue accent -- blue there is reserved for chrome: an
+// active/toggled button, a selected list item, a section heading.
+inline const juce::Colour valueGreen{0xff32cd32};
 
 inline constexpr int cardPadding = 16;
 inline constexpr int rowGap = 10;
@@ -48,7 +55,7 @@ public:
         if (pos > 0.001f) {
             juce::Path value;
             value.addCentredArc(centre.x, centre.y, radius, radius, 0.0f, startAngle, angle, true);
-            g.setColour(accent);
+            g.setColour(valueGreen);
             g.strokePath(value, juce::PathStrokeType(stroke, juce::PathStrokeType::curved,
                                                      juce::PathStrokeType::butt));
         }
@@ -65,7 +72,7 @@ public:
                                        centre.y - faceRadius * 0.3f * std::cos(angle)};
         const juce::Point<float> outer{centre.x + faceRadius * 0.92f * std::sin(angle),
                                        centre.y - faceRadius * 0.92f * std::cos(angle)};
-        g.setColour(accent);
+        g.setColour(valueGreen);
         g.drawLine({inner, outer}, 2.0f);
     }
 
@@ -97,6 +104,18 @@ public:
                               const juce::Colour& backgroundColour,
                               bool shouldDrawButtonAsHighlighted,
                               bool shouldDrawButtonAsDown) override {
+        const auto& props = button.getProperties();
+
+        // Opt-in, via Component::getProperties(), for the two header-button
+        // conventions the reference screenshots draw that ordinary buttons
+        // elsewhere in the plugin don't: a one-shot action (Undo/Redo) has
+        // no box at all, and a page-toggle action (Compare) has a border
+        // but no fill until it's the one currently active.
+        if (props.contains("flatButton") && static_cast<bool>(props["flatButton"])) {
+            return;
+        }
+        const bool navOutline = props.contains("navButton") && static_cast<bool>(props["navButton"]);
+
         const auto bounds = button.getLocalBounds().toFloat();
         auto fill = backgroundColour;
         if (shouldDrawButtonAsDown) fill = fill.darker(0.15f);
@@ -105,7 +124,7 @@ public:
         if (button.getToggleState()) {
             g.setColour(fill);
             g.fillRect(bounds);
-        } else {
+        } else if (!navOutline) {
             // Nearly flat -- Logic's own buttons vary only a few percent
             // brightness top to bottom, enough to read as a surface without
             // looking skeuomorphic.
@@ -118,32 +137,27 @@ public:
         g.drawRect(bounds, 1.0f);
     }
 
+    // No reference plugin ever draws a tick-in-a-box -- a binary control is
+    // a label whose state word itself carries the on/off styling (dim when
+    // off, lit when on), e.g. Limiter's "Soft Knee ON". No box, no tick glyph.
     void drawToggleButton(juce::Graphics& g, juce::ToggleButton& button,
                           bool /*shouldDrawButtonAsHighlighted*/,
                           bool /*shouldDrawButtonAsDown*/) override {
-        const float boxSize = 14.0f;
-        const auto bounds = button.getLocalBounds().toFloat();
-        const juce::Rectangle<float> box(bounds.getX(), bounds.getCentreY() - boxSize * 0.5f,
-                                         boxSize, boxSize);
-
-        g.setColour(button.findColour(juce::ToggleButton::tickDisabledColourId));
-        g.drawRect(box, 1.0f);
-        if (button.getToggleState()) {
-            g.setColour(button.findColour(juce::ToggleButton::tickColourId));
-            g.fillRect(box.reduced(3.0f));
-        }
-
-        g.setColour(button.findColour(juce::ToggleButton::textColourId));
+        g.setColour(button.getToggleState()
+                        ? button.findColour(juce::ToggleButton::tickColourId)
+                        : button.findColour(juce::ToggleButton::tickDisabledColourId));
         g.setFont(juce::FontOptions(13.0f));
-        const int textX = static_cast<int>(box.getRight()) + 8;
-        g.drawFittedText(button.getButtonText(),
-                         juce::Rectangle<int>(textX, 0, button.getWidth() - textX,
-                                               button.getHeight()),
+        g.drawFittedText(button.getButtonText(), button.getLocalBounds(),
                          juce::Justification::centredLeft, 1);
     }
 };
 
-/** Flat rectangular tab, the desktop equivalent of the app's filter chips. */
+/** One segment of a continuous segmented strip -- the desktop equivalent of
+ *  the app's filter chips, styled like Logic's own two/three-way selectors
+ *  (LR/MS, Clean/Diffuse): an unselected segment carries no fill or border
+ *  of its own -- it reads as part of the panel until selected, at which
+ *  point it fills solid accent. The group's own outer border and internal
+ *  dividers are drawn once by the owning ChipGroup, not per segment. */
 class Chip final : public juce::Button {
 public:
     explicit Chip(const juce::String& label) : juce::Button(label) { setClickingTogglesState(false); }
@@ -151,11 +165,12 @@ public:
     void paintButton(juce::Graphics& g, bool hover, bool) override {
         const auto r = getLocalBounds().toFloat();
         const bool on = getToggleState();
-        g.setColour(on ? accent : surfaceVariant);
-        g.fillRect(r);
-        if (!on) {
-            g.setColour(hover ? accent.withAlpha(0.5f) : surfaceVariant.brighter(0.15f));
-            g.drawRect(r, 1.0f);
+        if (on) {
+            g.setColour(accent);
+            g.fillRect(r);
+        } else if (hover) {
+            g.setColour(accent.withAlpha(0.12f));
+            g.fillRect(r);
         }
         g.setColour(on ? harmonizer::look::onAccent : harmonizer::look::text);
         g.setFont(juce::FontOptions(13.0f));
@@ -207,7 +222,7 @@ public:
         g.setColour(surfaceVariant);
         g.fillRect(r);
         if (level_ <= 0.001f) return;
-        const auto colour = level_ >= 0.9f ? error : (level_ >= 0.7f ? warn : accent);
+        const auto colour = level_ >= 0.9f ? error : (level_ >= 0.7f ? warn : valueGreen);
         g.setColour(colour);
         g.fillRect(r.withWidth(r.getWidth() * level_));
     }
@@ -226,7 +241,7 @@ public:
     }
     void paint(juce::Graphics& g) override {
         for (int i = 0; i < 10; ++i) {
-            g.setColour(i < active_ ? accent : surfaceVariant);
+            g.setColour(i < active_ ? valueGreen : surfaceVariant);
             g.fillRect(static_cast<float>(i) * 16.0f, 0.0f, 10.0f,
                       static_cast<float>(getHeight()));
         }
@@ -288,8 +303,10 @@ public:
         g.fillRect(getLocalBounds());
         g.setColour(surfaceVariant);
         g.fillRect(0, 0, getWidth(), 1);
-        g.setColour(muted);
-        g.setFont(juce::FontOptions(11.0f));
+        // Bright accent caps, matching Logic's own section headers (DELAY,
+        // CHARACTER, FEEDBACK...) rather than a dim, easy-to-miss label.
+        g.setColour(accent);
+        g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         g.drawText(title_, cardPadding, cardPadding - 4, getWidth(), 16,
                    juce::Justification::centredLeft);
     }
