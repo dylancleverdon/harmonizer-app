@@ -159,6 +159,16 @@ public:
         // One per voicing style, in jazz::Style order.
         static const char* const jazzStyle[jazz::kStyleCount];
 
+        // Nudges the voicer away from packing notes tight together below the
+        // ceiling note, where a close interval reads as mush rather than a
+        // chord -- see jazz::Settings::avoidMud/mudCeiling.
+        static constexpr const char* jazzAvoidMud = "jazzAvoidMud";
+        static constexpr const char* jazzMudCeiling = "jazzMudCeiling";
+
+        // Adds one extra voice a register below the rest of the chord,
+        // always the root -- see jazz::Settings::addBassNote.
+        static constexpr const char* jazzAddBassNote = "jazzAddBassNote";
+
         // Two different jobs. jazzTranspose is real: it is added to every
         // held key before the key names a key centre, so it genuinely
         // changes what key the chord is built in -- see collectKeys().
@@ -192,6 +202,10 @@ public:
         static constexpr const char* jazzCustomOn = "jazzCustomOn";
         static constexpr const char* jazzCustomUseMajor = "jazzCustomUseMajor";
         static constexpr const char* jazzCustomUseMinor = "jazzCustomUseMinor";
+        // Pins a custom voicing to one fixed octave instead of letting voice
+        // leading and range centring pick a fresh one every chord -- see
+        // jazz::Settings::customVoicingFixedRegister.
+        static constexpr const char* jazzCustomFixedRegister = "jazzCustomFixedRegister";
         // Each scale degree's custom entry is an explicit voicing: up to
         // jazz::kMaxVoicingNotes semitone-offset "slots", per context. Each
         // entry is always rooted on the note being played -- that is what
@@ -279,6 +293,17 @@ public:
     static int jazzCustomOffsetToRaw(int semitoneOffset);
     static int jazzCustomRawToOffset(int raw);
 
+    /**
+     * Auditions a chord library voicing: plays a short synthetic tone at
+     * rootNote through the engine, absolute-pitch harmonised up to the given
+     * absolute MIDI notes, so a voicing can be heard on demand without
+     * having to sing or play it live. Independent of jazz mode, the key
+     * centre, and the custom dictionary -- it neither reads nor changes any
+     * of them. A second call retriggers immediately, replacing whatever was
+     * still sounding from the last one. Message thread only.
+     */
+    void previewJazzVoicing(const juce::Array<int>& notes, int rootNote);
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void pushParameters();
@@ -335,6 +360,9 @@ private:
     std::atomic<float>* pJazzVoicesAuto_ = nullptr;
     std::atomic<float>* pJazzShuffle_ = nullptr;
     std::atomic<float>* pJazzDouble_ = nullptr;
+    std::atomic<float>* pJazzAvoidMud_ = nullptr;
+    std::atomic<float>* pJazzMudCeiling_ = nullptr;
+    std::atomic<float>* pJazzAddBassNote_ = nullptr;
     std::atomic<float>* pJazzStyle_[jazz::kStyleCount] = {};
     std::atomic<float>* pJazzTranspose_ = nullptr;
     std::atomic<float>* pJazzTransposeAudioIn_ = nullptr;
@@ -345,6 +373,7 @@ private:
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
     std::atomic<float>* pJazzCustomUseMinor_ = nullptr;
+    std::atomic<float>* pJazzCustomFixedRegister_ = nullptr;
     // [context: 0 = major, 1 = minor][degree 0..11][slot 0..kMaxVoicingNotes)
     std::atomic<float>* pJazzCustomOffset_[2][12][jazz::kMaxVoicingNotes] = {};
 
@@ -353,6 +382,27 @@ private:
     std::atomic<bool> jazzRecordActive_{false};
     std::atomic<int> jazzRecordNotes_[jazz::kMaxVoicingNotes];
     void addJazzCustomRecordedNote(int note);
+
+    // --- chord library preview ---------------------------------------------
+    // Cross-thread handoff for previewJazzVoicing(): the message thread
+    // writes a request and raises previewPending_; the audio thread picks it
+    // up at the top of the next processBlock() and owns everything else
+    // about it from there -- what is currently sounding, how many samples
+    // are left, and the running phase of the synthetic tone.
+    std::atomic<bool> previewPending_{false};
+    std::atomic<int> previewRequestNotes_[jazz::kMaxVoicingNotes];
+    std::atomic<int> previewRequestCount_{0};
+    std::atomic<int> previewRequestRoot_{60};
+
+    int previewActiveNotes_[jazz::kMaxVoicingNotes] = {};
+    int previewActiveCount_ = 0;
+    int previewActiveRootNote_ = -1;
+    int previewSamplesRemaining_ = 0;
+    int previewTotalSamples_ = 0;
+    double previewPhase_ = 0.0;
+    void previewUpdate(int frames);
+    void previewSynthesize(float* in, int frames);
+    void previewStop();
 
     /** Sets a parameter by id from the message thread -- used by preset load
      *  and by the custom voicing editor, both of which write parameters

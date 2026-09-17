@@ -8,6 +8,7 @@
 // and asking for smoother voice leading actually reduces how far the voices
 // travel.
 
+#include "JazzChordLibrary.h"
 #include "JazzMidiImport.h"
 #include "JazzVoicer.h"
 
@@ -766,6 +767,51 @@ int main() {
         const auto badTiming = jazz::analyzeForCustomDictionary(notes.data(),
                                                                  static_cast<int>(notes.size()), 0);
         check(badTiming.keySegments == 0, "an invalid ticks-per-quarter-note analyses to nothing");
+    }
+
+    // --- The chord library: a transcription error here (an offset past what
+    // the custom dictionary can store, a count that doesn't match the real
+    // array, an empty name) would otherwise only surface as a broken row in
+    // the browser or a silently truncated voicing once loaded.
+    std::printf("\n-- Chord library --\n");
+    {
+        const int total = jazz::libraryVoicingCount();
+        check(total > 0, "the library has entries");
+
+        bool allValid = true;
+        bool allNamed = true;
+        for (int i = 0; i < total; ++i) {
+            const auto& v = jazz::libraryVoicing(i);
+            if (v.name == nullptr || v.name[0] == '\0' || v.description == nullptr ||
+                v.description[0] == '\0') {
+                allNamed = false;
+            }
+            if (v.count <= 0 || v.count > jazz::kMaxVoicingNotes) { allValid = false; continue; }
+            for (int j = 0; j < v.count; ++j) {
+                if (v.offsets[j] < -jazz::kMaxCustomOffset || v.offsets[j] > jazz::kMaxCustomOffset) {
+                    allValid = false;
+                }
+            }
+            const auto entry = jazz::libraryVoicingToEntry(v);
+            if (entry.count != v.count) allValid = false;
+            for (int j = 0; j < v.count; ++j) {
+                if (entry.offsets[j] != v.offsets[j]) allValid = false;
+            }
+        }
+        checkf(allValid, "every entry has a valid, in-range count and offsets (%d entries)", total);
+        check(allNamed, "every entry has a name and a description");
+
+        // Every theme is actually used -- a theme nobody voices for would
+        // sit in the browser's filter chips with an empty list behind it.
+        bool everyThemeUsed = true;
+        for (int t = 0; t < jazz::kLibraryThemeCount; ++t) {
+            bool used = false;
+            for (int i = 0; i < total && !used; ++i) {
+                used = jazz::libraryVoicing(i).theme == static_cast<jazz::LibraryTheme>(t);
+            }
+            everyThemeUsed &= used;
+        }
+        check(everyThemeUsed, "every theme has at least one voicing filed under it");
     }
 
     std::printf("\n=============================================\n");

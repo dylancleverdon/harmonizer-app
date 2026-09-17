@@ -45,6 +45,9 @@ constexpr float  kJazzCentsWindow = 40.0f;
 // rapid back-and-forth between them.
 constexpr float  kJazzHysteresisCents = 65.0f;
 
+// How long a chord library preview sounds for.
+constexpr double kJazzPreviewSeconds = 0.6;
+
 template <typename T, size_t N>
 int pick(const T (&table)[N], float normalisedIndex) {
     const int i = juce::jlimit(0, static_cast<int>(N) - 1,
@@ -120,6 +123,9 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzVoicesAuto_ = apvts.getRawParameterValue(ParamId::jazzVoicesAuto);
     pJazzShuffle_ = apvts.getRawParameterValue(ParamId::jazzShuffle);
     pJazzDouble_ = apvts.getRawParameterValue(ParamId::jazzDouble);
+    pJazzAvoidMud_ = apvts.getRawParameterValue(ParamId::jazzAvoidMud);
+    pJazzMudCeiling_ = apvts.getRawParameterValue(ParamId::jazzMudCeiling);
+    pJazzAddBassNote_ = apvts.getRawParameterValue(ParamId::jazzAddBassNote);
     for (int i = 0; i < jazz::kStyleCount; ++i) {
         pJazzStyle_[i] = apvts.getRawParameterValue(ParamId::jazzStyle[i]);
     }
@@ -132,6 +138,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
     pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
     pJazzCustomUseMinor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMinor);
+    pJazzCustomFixedRegister_ = apvts.getRawParameterValue(ParamId::jazzCustomFixedRegister);
     for (int ctx = 0; ctx < 2; ++ctx) {
         for (int degree = 0; degree < 12; ++degree) {
             for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
@@ -142,6 +149,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     }
     for (auto& n : jvNotes_) n.store(-1);
     for (auto& n : jazzRecordNotes_) n.store(-1);
+    for (auto& n : previewRequestNotes_) n.store(-1);
 
     // The shuffle should not play the same sequence of voicings every time the
     // plugin is loaded.
@@ -257,6 +265,17 @@ HarmonizerAudioProcessor::createLayout() {
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzDouble, 1}, "Double Your Note (Jazz)", false));
 
+    // Mud avoidance: a preference against packing notes tight together below
+    // the ceiling note, where it reads as mush rather than a chord.
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzAvoidMud, 1}, "Avoid Mud", false));
+    layout.add(std::make_unique<AudioParameterInt>(
+        ParameterID{ParamId::jazzMudCeiling, 1}, "Mud Ceiling", 24, 96, 55, asNote));
+
+    // One extra voice a register below the rest of the chord, always the root.
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzAddBassNote, 1}, "Add Bass Note", false));
+
     // None of these switched on means "choose for me", which is a mode in its
     // own right rather than an empty selection.
     for (int i = 0; i < jazz::kStyleCount; ++i) {
@@ -332,6 +351,12 @@ HarmonizerAudioProcessor::createLayout() {
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzCustomUseMinor, 1}, "Custom Dictionary For Minor", false));
 
+    // Pins a custom voicing to one fixed octave -- the one nearest the middle
+    // of the range below -- instead of letting voice leading and range
+    // centring pick a fresh register for it every chord.
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{ParamId::jazzCustomFixedRegister, 1}, "Lock Custom Voicing Register", false));
+
     // Each degree's entry is an explicit voicing rather than a chord type:
     // jazz::kMaxVoicingNotes "slot" parameters, each either 0 (unused) or a
     // semitone offset above the root packed as jazzCustomOffsetToRaw() below
@@ -389,6 +414,9 @@ jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
                      : static_cast<int>(std::lround(pJazzVoices_->load()));
     s.shuffle = pJazzShuffle_->load() > 0.5f;
     s.doubleMelody = pJazzDouble_->load() > 0.5f;
+    s.avoidMud = pJazzAvoidMud_->load() > 0.5f;
+    s.mudCeiling = static_cast<int>(std::lround(pJazzMudCeiling_->load()));
+    s.addBassNote = pJazzAddBassNote_->load() > 0.5f;
     for (int i = 0; i < jazz::kStyleCount; ++i) {
         s.styles[i] = pJazzStyle_[i]->load() > 0.5f;
     }
@@ -396,6 +424,7 @@ jazz::Settings HarmonizerAudioProcessor::jazzSettings() const {
     s.useCustomDictionary = pJazzCustomOn_->load() > 0.5f;
     s.customDict.useMajor = pJazzCustomUseMajor_->load() > 0.5f;
     s.customDict.useMinor = pJazzCustomUseMinor_->load() > 0.5f;
+    s.customVoicingFixedRegister = pJazzCustomFixedRegister_->load() > 0.5f;
     for (int degree = 0; degree < 12; ++degree) {
         s.customDict.major[degree] = jazzCustomEntry(false, degree);
         s.customDict.minor[degree] = jazzCustomEntry(true, degree);
@@ -652,6 +681,12 @@ void HarmonizerAudioProcessor::pushParameters() {
     // engine's plain click-avoidance floor rather than picking up whatever
     // the jazz page's knob happens to be set to.
     p.glideMs.store(pJazzMode_->load() > 0.5f ? pJazzGlideMs_->load() : 0.0f);
+    // Sustain pedal, jazz mode only: while it is down, let the chord actually
+    // ring out through a quiet passage instead of fading with the input --
+    // see Harmonizer::runHop()'s freeze. jazzSustainHeld_ is tracked
+    // regardless of jazz mode (see processBlock()'s MIDI loop), so this is
+    // the one place that gates it on jazz mode actually being on.
+    p.sustainFreeze.store(pJazzMode_->load() > 0.5f && jazzSustainHeld_.load());
 }
 
 void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
@@ -722,7 +757,20 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     if (jazzOn != jazzOn_) jazzReconfigure(jazzOn);
-    if (jazzOn) jazzUpdate(buffer.getNumSamples());
+
+    previewUpdate(buffer.getNumSamples());
+    const bool previewingNow = previewActiveCount_ > 0;
+    if (previewingNow) {
+        // Independent of jazz mode and the live mix: force pure wet and
+        // absolute-pitch tracking so the injected tone is what actually gets
+        // harmonised and heard, without touching the real parameters.
+        engine_.params().harmonyMode.store(static_cast<int>(dsp::HarmonyMode::Absolute));
+        engine_.params().wetDry.store(1.0f);
+    }
+
+    // A preview pauses jazz mode's own decision loop for its short duration
+    // rather than letting the two fight over the same engine voice slots.
+    if (jazzOn && !previewingNow) jazzUpdate(buffer.getNumSamples());
 
     const int numSamples = buffer.getNumSamples();
     if (numSamples <= 0) return;
@@ -732,40 +780,45 @@ void HarmonizerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         monoOut_.setSize(1, numSamples, false, true, false);
     }
 
-    // Take audio from wherever the host is providing it. On an audio track that
-    // is the main bus; in Logic's instrument slot the track carries nothing and
-    // the signal arrives on the side chain.
-    //
-    // Each bus is averaged to mono on its own and the results are summed, rather
-    // than averaging every channel together. That distinction matters: Logic
-    // hands over a silent two-channel main bus alongside the live side chain,
-    // and averaging across all four channels quietly attenuated the only real
-    // signal by 6 dB.
     float* in = monoIn_.getWritePointer(0);
-    juce::FloatVectorOperations::clear(in, numSamples);
 
-    float busPeak[2] = {0.0f, 0.0f};
-    int busChannels[2] = {0, 0};
+    if (previewingNow) {
+        previewSynthesize(in, numSamples);
+    } else {
+        // Take audio from wherever the host is providing it. On an audio track
+        // that is the main bus; in Logic's instrument slot the track carries
+        // nothing and the signal arrives on the side chain.
+        //
+        // Each bus is averaged to mono on its own and the results are summed,
+        // rather than averaging every channel together. That distinction
+        // matters: Logic hands over a silent two-channel main bus alongside the
+        // live side chain, and averaging across all four channels quietly
+        // attenuated the only real signal by 6 dB.
+        juce::FloatVectorOperations::clear(in, numSamples);
 
-    for (int busIndex = 0; busIndex < juce::jmin(2, getBusCount(true)); ++busIndex) {
-        const auto bus = getBusBuffer(buffer, true, busIndex);
-        const int channels = bus.getNumChannels();
-        busChannels[busIndex] = channels;
-        if (channels <= 0) continue;
+        float busPeak[2] = {0.0f, 0.0f};
+        int busChannels[2] = {0, 0};
 
-        const float scale = 1.0f / static_cast<float>(channels);
-        for (int ch = 0; ch < channels; ++ch) {
-            juce::FloatVectorOperations::addWithMultiply(in, bus.getReadPointer(ch), scale,
-                                                         numSamples);
-            busPeak[busIndex] = juce::jmax(busPeak[busIndex],
-                                           bus.getMagnitude(ch, 0, numSamples));
+        for (int busIndex = 0; busIndex < juce::jmin(2, getBusCount(true)); ++busIndex) {
+            const auto bus = getBusBuffer(buffer, true, busIndex);
+            const int channels = bus.getNumChannels();
+            busChannels[busIndex] = channels;
+            if (channels <= 0) continue;
+
+            const float scale = 1.0f / static_cast<float>(channels);
+            for (int ch = 0; ch < channels; ++ch) {
+                juce::FloatVectorOperations::addWithMultiply(in, bus.getReadPointer(ch), scale,
+                                                             numSamples);
+                busPeak[busIndex] = juce::jmax(busPeak[busIndex],
+                                               bus.getMagnitude(ch, 0, numSamples));
+            }
         }
-    }
 
-    mainChannels_.store(busChannels[0]);
-    sideChannels_.store(busChannels[1]);
-    mainPeak_.store(busPeak[0]);
-    sidePeak_.store(busPeak[1]);
+        mainChannels_.store(busChannels[0]);
+        sideChannels_.store(busChannels[1]);
+        mainPeak_.store(busPeak[0]);
+        sidePeak_.store(busPeak[1]);
+    }
 
     float* out = monoOut_.getWritePointer(0);
     engine_.process(in, out, numSamples);
@@ -1128,12 +1181,15 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     mix(static_cast<uint64_t>(settings.ninth) | (static_cast<uint64_t>(settings.eleventh) << 1) |
         (static_cast<uint64_t>(settings.thirteenth) << 2) |
         (static_cast<uint64_t>(settings.shuffle) << 3) |
-        (static_cast<uint64_t>(settings.doubleMelody) << 4));
+        (static_cast<uint64_t>(settings.doubleMelody) << 4) |
+        (static_cast<uint64_t>(settings.avoidMud) << 5) |
+        (static_cast<uint64_t>(settings.addBassNote) << 6));
     mix(static_cast<uint64_t>(settings.octaveShift + 8));
     mix(static_cast<uint64_t>(settings.inversionShift + 8));
     mix(static_cast<uint64_t>(settings.rangeLow));
     mix(static_cast<uint64_t>(settings.rangeHigh));
     mix(static_cast<uint64_t>(settings.maxNotes));
+    mix(static_cast<uint64_t>(settings.mudCeiling));
     mix(static_cast<uint64_t>(std::lround(settings.smoothness * 100.0f)));
     uint64_t styleBits = 0;
     for (int i = 0; i < jazz::kStyleCount; ++i) {
@@ -1145,7 +1201,8 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     // just the next new note.
     mix(static_cast<uint64_t>(settings.useCustomDictionary) |
         (static_cast<uint64_t>(settings.customDict.useMajor) << 1) |
-        (static_cast<uint64_t>(settings.customDict.useMinor) << 2));
+        (static_cast<uint64_t>(settings.customDict.useMinor) << 2) |
+        (static_cast<uint64_t>(settings.customVoicingFixedRegister) << 3));
     if (settings.useCustomDictionary) {
         const auto mixEntry = [&mix](const jazz::CustomEntry& e) {
             mix(static_cast<uint64_t>(e.count));
@@ -1198,6 +1255,86 @@ HarmonizerAudioProcessor::JazzView HarmonizerAudioProcessor::jazzView() const {
 }
 
 // ---------------------------------------------------------------------------
+// Chord library preview. Entirely separate from jazz mode's own machinery --
+// it drives the engine directly, in Absolute mode, off a synthetic tone
+// rather than anything read from a key centre or the custom dictionary.
+// ---------------------------------------------------------------------------
+
+void HarmonizerAudioProcessor::previewJazzVoicing(const juce::Array<int>& notes, int rootNote) {
+    const int count = juce::jlimit(0, jazz::kMaxVoicingNotes, notes.size());
+    for (int i = 0; i < jazz::kMaxVoicingNotes; ++i) {
+        previewRequestNotes_[i].store(i < count ? juce::jlimit(0, 127, notes[i]) : -1);
+    }
+    previewRequestCount_.store(count);
+    previewRequestRoot_.store(juce::jlimit(0, 127, rootNote));
+    previewPending_.store(true);
+}
+
+void HarmonizerAudioProcessor::previewStop() {
+    for (int i = 0; i < previewActiveCount_; ++i) {
+        dsp::MidiEvent event;
+        event.status = 0x80;
+        event.data1 = static_cast<uint8_t>(previewActiveNotes_[i]);
+        event.data2 = 0;
+        engine_.midiQueue().push(event);
+    }
+    previewActiveCount_ = 0;
+    previewActiveRootNote_ = -1;
+    previewSamplesRemaining_ = 0;
+}
+
+// Trigger and timing only -- whether this block should carry the synthetic
+// tone is previewActiveCount_ > 0 afterwards; previewSynthesize() below does
+// the actual audio once the caller knows that.
+void HarmonizerAudioProcessor::previewUpdate(int frames) {
+    if (previewPending_.exchange(false)) {
+        previewStop();   // a fresh request replaces whatever was still sounding
+
+        previewActiveCount_ = juce::jlimit(0, jazz::kMaxVoicingNotes, previewRequestCount_.load());
+        for (int i = 0; i < previewActiveCount_; ++i) {
+            previewActiveNotes_[i] = juce::jlimit(0, 127, previewRequestNotes_[i].load());
+        }
+        previewActiveRootNote_ = juce::jlimit(0, 127, previewRequestRoot_.load());
+
+        for (int i = 0; i < previewActiveCount_; ++i) {
+            dsp::MidiEvent event;
+            event.status = 0x90;
+            event.data1 = static_cast<uint8_t>(previewActiveNotes_[i]);
+            event.data2 = 100;
+            engine_.midiQueue().push(event);
+        }
+
+        previewSamplesRemaining_ = static_cast<int>(getSampleRate() * kJazzPreviewSeconds);
+        previewPhase_ = 0.0;
+        return;   // this block already carries the fresh note-on; let it sound
+    }
+
+    if (previewSamplesRemaining_ > 0) {
+        previewSamplesRemaining_ -= frames;
+        if (previewSamplesRemaining_ <= 0) previewStop();
+    }
+}
+
+// Fills `in` with a continuous sine at the preview's root note -- standing in
+// for the live input the engine would ordinarily be resynthesising. Only
+// ever called with wetDry forced to 1.0 for the same block (see
+// processBlock()), so this raw tone itself is never actually heard; only
+// what the engine builds from it is, already through its own note-on and
+// note-off gain smoothing, which is what keeps this click-free without
+// needing a fade of its own here.
+void HarmonizerAudioProcessor::previewSynthesize(float* in, int frames) {
+    const double hz = 440.0 * std::pow(2.0, (previewActiveRootNote_ - 69) / 12.0);
+    const double sr = getSampleRate();
+    const double phaseInc = juce::MathConstants<double>::twoPi * hz / (sr > 0.0 ? sr : 48000.0);
+    constexpr float kPreviewGain = 0.25f;   // headroom for several voices built on top
+    for (int i = 0; i < frames; ++i) {
+        in[i] = static_cast<float>(std::sin(previewPhase_)) * kPreviewGain;
+        previewPhase_ += phaseInc;
+        if (previewPhase_ > juce::MathConstants<double>::twoPi) {
+            previewPhase_ -= juce::MathConstants<double>::twoPi;
+        }
+    }
+}
 
 void HarmonizerAudioProcessor::handleAsyncUpdate() {
     const int latency = pendingLatency_.load();

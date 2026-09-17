@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "JazzChordLibrary.h"
 
 using namespace harmonizer;
 
@@ -57,6 +58,11 @@ void styleSmallButton(juce::TextButton& b) {
 void styleSlider(juce::Slider& s) {
     s.setSliderStyle(juce::Slider::LinearHorizontal);
     s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 62, 20);
+    // Every page here scrolls in a Viewport. Without this, a slider under the
+    // cursor eats the wheel event and changes its own value instead of
+    // letting the page scroll -- so just moving the mouse down the page while
+    // scrolling silently retunes whatever control happens to be underneath.
+    s.setScrollWheelEnabled(false);
     s.setColour(juce::Slider::trackColourId, look::accent);
     s.setColour(juce::Slider::backgroundColourId, look::surfaceVariant);
     s.setColour(juce::Slider::thumbColourId, look::accent);
@@ -524,6 +530,26 @@ public:
                            "leading.");
         sits.addRow(rangeNote_, 58);
 
+        styleToggle(avoidMud_, "Avoid mud");
+        sits.addRow(avoidMud_, 24);
+        mudCeilingLabel_.setText("MUD CEILING", look::muted);
+        sits.addRow(mudCeilingLabel_, 14);
+        styleSlider(mudCeilingSlider_);
+        sits.addRow(mudCeilingSlider_, 24);
+        mudNote_.setText(
+            "Below this note, two voiced tones sitting closer than about a third get nudged "
+            "apart instead of packed in tight -- a preference, not a wall, so style, range and "
+            "voice leading can still outweigh it. Move the ceiling up or down to say how much of "
+            "the low end counts.");
+        sits.addRow(mudNote_, 58);
+
+        styleToggle(addBassNote_, "Add bass note");
+        sits.addRow(addBassNote_, 24);
+        bassNoteNote_.setText("Adds one extra voice a register below the rest of the chord, "
+                              "always the root -- a walking-bass-style low end underneath "
+                              "whatever the voicing above is doing.");
+        sits.addRow(bassNoteNote_, 44);
+
         // --- Voice leading.
         auto& leading = addCard("Voice leading");
         styleSlider(smoothSlider_);
@@ -583,6 +609,70 @@ public:
                             "when you are running fully wet.");
         styles.addRow(doubleNote_, 30);
 
+        // --- Chord library: a curated set of named voicings to browse,
+        // audition and drop straight into whichever degree the custom
+        // dictionary editor below is currently pointed at.
+        auto& libraryCard = addCard("Chord library");
+        libraryIntro_.setText(
+            "A curated set of named voicings -- rootless shapes, drop 2 and drop 3, quartal "
+            "fourths, shells, upper structures and more -- to browse and audition. Preview plays "
+            "it through a short synthetic tone so you can hear it without singing or playing "
+            "anything; Load writes it into whichever degree is selected below, exactly as if you "
+            "had clicked the same notes on the keyboard by hand.");
+        libraryCard.addRow(libraryIntro_, 72);
+
+        libraryThemeLabel_.setText("THEME", look::muted);
+        libraryCard.addRow(libraryThemeLabel_, 14);
+        {
+            const auto makeFilterButton = [this](juce::OwnedArray<juce::TextButton>& buttons,
+                                                 Grid& grid, const juce::String& text,
+                                                 int* filter, int value) {
+                auto* b = buttons.add(new juce::TextButton(text));
+                styleSmallButton(*b);
+                b->setClickingTogglesState(false);
+                b->onClick = [this, filter, value] {
+                    *filter = value;
+                    rebuildLibraryResults();
+                };
+                grid.add(*b);
+            };
+            makeFilterButton(libraryThemeButtons_, libraryThemeGrid_, "All", &libraryThemeFilter_, -1);
+            for (int t = 0; t < jazz::kLibraryThemeCount; ++t) {
+                makeFilterButton(libraryThemeButtons_, libraryThemeGrid_,
+                                 jazz::libraryThemeName(static_cast<jazz::LibraryTheme>(t)),
+                                 &libraryThemeFilter_, t);
+            }
+        }
+        libraryCard.addRow(libraryThemeGrid_, libraryThemeGrid_.preferredHeight());
+
+        libraryQualityLabel_.setText("BEST OVER", look::muted);
+        libraryCard.addRow(libraryQualityLabel_, 14);
+        {
+            const auto makeFilterButton = [this](juce::OwnedArray<juce::TextButton>& buttons,
+                                                 Grid& grid, const juce::String& text,
+                                                 int* filter, int value) {
+                auto* b = buttons.add(new juce::TextButton(text));
+                styleSmallButton(*b);
+                b->setClickingTogglesState(false);
+                b->onClick = [this, filter, value] {
+                    *filter = value;
+                    rebuildLibraryResults();
+                };
+                grid.add(*b);
+            };
+            makeFilterButton(libraryQualityButtons_, libraryQualityGrid_, "All",
+                             &libraryQualityFilter_, -1);
+            for (int q = 0; q < jazz::kLibraryQualityCount; ++q) {
+                makeFilterButton(libraryQualityButtons_, libraryQualityGrid_,
+                                 jazz::libraryQualityName(static_cast<jazz::LibraryQuality>(q)),
+                                 &libraryQualityFilter_, q);
+            }
+        }
+        libraryCard.addRow(libraryQualityGrid_, libraryQualityGrid_.preferredHeight());
+
+        libraryResultsCard_ = &addCard("Chord library results");
+        rebuildLibraryResults();
+
         // --- Custom chord dictionary: a user-built alternative to the one
         // above. It replaces which chord is picked for a degree, nothing else
         // -- range, voice leading and voice count still apply on top of it.
@@ -617,6 +707,15 @@ public:
             "key is held. A degree left blank below does the same for just that one note. Turn "
             "this whole card off to get back to how jazz mode always worked.");
         customCard.addRow(customContextNote_, 44);
+
+        styleToggle(customFixedRegister_, "Lock custom voicing register");
+        customCard.addRow(customFixedRegister_, 24);
+        customFixedRegisterNote_.setText(
+            "Normally a custom voicing's octave is re-picked every chord to lead smoothly from "
+            "whatever came before. Locked, it always sits at the one octave nearest the middle of "
+            "Range Low/Range High instead -- so a voicing built to sit in a specific register (a "
+            "bass note on C3, say) stays there rather than drifting to chase the melody.");
+        customCard.addRow(customFixedRegisterNote_, 58);
 
         // Which context's table the keyboard below is editing.
         editContextMajor_.setButtonText("Editing: major");
@@ -723,6 +822,8 @@ public:
         customCard.addRow(recordNote_, 44);
 
         customCard.addRow(customKeyboard_, 96);
+        drawnChordRow_ = std::make_unique<look::StatRow>("You're drawing");
+        customCard.addRow(*drawnChordRow_, 18);
         customKeyboard_.onNoteClicked = [this](int note) {
             if (processor_.jazzCustomRecording()) return;   // showing the live capture, not the saved entry
             const int offset = note - previewRootNote();
@@ -939,6 +1040,8 @@ public:
         aThirteenth_ = std::make_unique<BA>(apvts, P::jazzThirteenth, thirteenth_);
         aShuffle_ = std::make_unique<BA>(apvts, P::jazzShuffle, shuffle_);
         aDouble_ = std::make_unique<BA>(apvts, P::jazzDouble, double_);
+        aAvoidMud_ = std::make_unique<BA>(apvts, P::jazzAvoidMud, avoidMud_);
+        aAddBassNote_ = std::make_unique<BA>(apvts, P::jazzAddBassNote, addBassNote_);
         for (int i = 0; i < jazz::kStyleCount; ++i) {
             aStyles_.add(new BA(apvts, P::jazzStyle[i], *styleToggles_[i]));
         }
@@ -952,15 +1055,19 @@ public:
         aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
         aGlide_ = std::make_unique<SA>(apvts, P::jazzGlideMs, glideSlider_);
         aChordHold_ = std::make_unique<SA>(apvts, P::jazzChordHoldMs, chordHoldSlider_);
+        aMudCeiling_ = std::make_unique<SA>(apvts, P::jazzMudCeiling, mudCeilingSlider_);
 
         aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
         aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
         aCustomUseMinor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMinor, customUseMinor_);
+        aCustomFixedRegister_ =
+            std::make_unique<BA>(apvts, P::jazzCustomFixedRegister, customFixedRegister_);
 
         lowSlider_.textFromValueFunction = [](double v) {
             return flatNoteName(static_cast<int>(v));
         };
         highSlider_.textFromValueFunction = lowSlider_.textFromValueFunction;
+        mudCeilingSlider_.textFromValueFunction = lowSlider_.textFromValueFunction;
         smoothSlider_.textFromValueFunction = [](double v) {
             return juce::String(juce::roundToInt(v * 100.0)) + " %";
         };
@@ -1144,6 +1251,87 @@ private:
         void resized() override { if (onResize) onResize(); }
     };
 
+    /** One row of the chord library's results: a name and its interval
+     *  spelling, a short description, and Preview/Load buttons. Owns its own
+     *  children rather than the page tracking parallel arrays of them. */
+    class LibraryRow final : public juce::Component {
+    public:
+        juce::Label nameLabel;
+        look::Note descNote;
+        juce::TextButton previewButton{"Preview"}, loadButton{"Load"};
+
+        LibraryRow() {
+            nameLabel.setColour(juce::Label::textColourId, look::text);
+            nameLabel.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+            addAndMakeVisible(nameLabel);
+            addAndMakeVisible(descNote);
+            styleSmallButton(previewButton);
+            styleSmallButton(loadButton);
+            addAndMakeVisible(previewButton);
+            addAndMakeVisible(loadButton);
+        }
+
+        void resized() override {
+            constexpr int buttonW = 64, buttonGap = 6;
+            const int buttonsW = buttonW * 2 + buttonGap;
+            nameLabel.setBounds(0, 0, juce::jmax(0, getWidth() - buttonsW - 8), 18);
+            previewButton.setBounds(getWidth() - buttonsW, 0, buttonW, 22);
+            loadButton.setBounds(getWidth() - buttonW, 0, buttonW, 22);
+            descNote.setBounds(0, 20, getWidth(), juce::jmax(0, getHeight() - 20));
+        }
+    };
+
+    /** Rebuilds the results card's rows from the library filtered by
+     *  libraryThemeFilter_/libraryQualityFilter_ (-1 means "all"). Called
+     *  once up front and again every time a filter button is clicked. */
+    void rebuildLibraryResults() {
+        libraryResultsCard_->clearRows();
+        libraryRows_.clear();
+
+        for (int i = 0; i < jazz::libraryVoicingCount(); ++i) {
+            const jazz::LibraryVoicing v = jazz::libraryVoicing(i);
+            if (libraryThemeFilter_ >= 0 &&
+                static_cast<int>(v.theme) != libraryThemeFilter_) {
+                continue;
+            }
+            if (libraryQualityFilter_ >= 0 &&
+                static_cast<int>(v.quality) != libraryQualityFilter_) {
+                continue;
+            }
+
+            auto* row = libraryRows_.add(new LibraryRow());
+            juce::String spelling;
+            for (int n = 0; n < v.count; ++n) {
+                spelling += (spelling.isEmpty() ? "" : " ") +
+                            juce::String(jazz::intervalName(((v.offsets[n] % 12) + 12) % 12));
+            }
+            row->nameLabel.setText(juce::String(v.name) + "  --  " +
+                                       jazz::libraryThemeName(v.theme) + "  (" +
+                                       jazz::libraryQualityName(v.quality) + ")  " + spelling,
+                                   juce::dontSendNotification);
+            row->descNote.setText(v.description);
+            row->previewButton.onClick = [this, v] {
+                const int root = previewRootNote();
+                juce::Array<int> notes;
+                for (int n = 0; n < v.count; ++n) notes.add(root + v.offsets[n]);
+                processor_.previewJazzVoicing(notes, root);
+            };
+            row->loadButton.onClick = [this, v] {
+                processor_.clearJazzCustomVoicing(editMinor_, editDegree_);
+                for (int n = 0; n < v.count; ++n) {
+                    processor_.setJazzCustomVoicingNote(editMinor_, editDegree_, v.offsets[n], true);
+                }
+                refreshCustomEditor();
+            };
+            libraryResultsCard_->addRow(*row, 58);
+        }
+
+        if (libraryRows_.isEmpty()) {
+            libraryResultsEmptyNote_.setText("Nothing matches this filter combination.", look::muted);
+            libraryResultsCard_->addRow(libraryResultsEmptyNote_, 24);
+        }
+    }
+
     /** Where the keyboard editor's root is drawn: the actual note the chord
      *  would be rooted on if you held previewKeyPc_ and played editDegree_
      *  semitones above it, placed in the octave just above middle C. Purely
@@ -1204,6 +1392,7 @@ private:
                     juce::String(recorded.size()) + " note" + (recorded.size() == 1 ? "" : "s") +
                     " captured. Play more, Reset to clear, or Save to write it to this degree.",
                 look::warn);
+            drawnChordRow_->setValue("recording...");
             return;
         }
 
@@ -1222,9 +1411,23 @@ private:
                 degree + " over a held " + keyName + ", " + context +
                     " -- blank, using the built-in chord for now.",
                 look::muted);
+            drawnChordRow_->setValue("-");
         } else {
             customVoicingStatus_.setText(
                 degree + " over a held " + keyName + ", " + context + ":  " + summary, look::accent);
+
+            // The same spelling the live Jazz page uses for a custom voicing
+            // (root plus whichever of its own tones it actually contains) --
+            // so what shows here is exactly what will play, not a guess.
+            jazz::Voicing preview;
+            preview.chordRootPc = ((previewKeyPc_ + editDegree_) % 12 + 12) % 12;
+            preview.customVoicing = true;
+            preview.count = juce::jlimit(0, jazz::kMaxVoicingNotes, notes.size());
+            for (int i = 0; i < preview.count; ++i) preview.notes[i] = notes[i];
+            const jazz::Settings unusedForCustom;
+            char symbol[64] = {};
+            jazz::chordSymbol(preview, unusedForCustom, symbol, sizeof(symbol));
+            drawnChordRow_->setValue(juce::String(symbol));
         }
     }
 
@@ -1244,11 +1447,13 @@ private:
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
     juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_,
-        transposeAudioSlider_, glideSlider_, chordHoldSlider_;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_, aChordHold_;
+        transposeAudioSlider_, glideSlider_, chordHoldSlider_, mudCeilingSlider_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_, aChordHold_,
+        aMudCeiling_;
     look::Note glideLabel_, glideNote_, chordHoldLabel_, chordHoldNote_;
-    juce::ToggleButton voicesAuto_, latch_;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
+    juce::ToggleButton voicesAuto_, latch_, avoidMud_, addBassNote_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_,
+        aAvoidMud_, aAddBassNote_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_,
         aTransposeAudio_;
     std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
@@ -1257,7 +1462,7 @@ private:
     look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
         inversionLabel_, shiftNote_, rangeLabel_, rangeNote_, smoothNote_, stylesNote_,
         shuffleNote_, doubleNote_, transposeLabel_, transposeNote_, transposeAudioLabel_,
-        transposeAudioNote_, latchNote_;
+        transposeAudioNote_, latchNote_, mudCeilingLabel_, mudNote_, bassNoteNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aEnable_, aNinth_,
         aEleventh_, aThirteenth_, aShuffle_, aDouble_;
@@ -1265,13 +1470,22 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aLow_, aHigh_,
         aSmooth_, aVoices_;
 
+    // --- Chord library.
+    look::Note libraryIntro_, libraryThemeLabel_, libraryQualityLabel_, libraryResultsEmptyNote_;
+    juce::OwnedArray<juce::TextButton> libraryThemeButtons_, libraryQualityButtons_;
+    Grid libraryThemeGrid_{3, 26}, libraryQualityGrid_{3, 26};
+    int libraryThemeFilter_ = -1;     // -1 = all themes
+    int libraryQualityFilter_ = -1;   // -1 = all qualities
+    look::Card* libraryResultsCard_ = nullptr;   // owned by Page::cards_
+    juce::OwnedArray<LibraryRow> libraryRows_;
+
     // --- Custom chord dictionary.
-    juce::ToggleButton customOn_, customUseMajor_, customUseMinor_;
+    juce::ToggleButton customOn_, customUseMajor_, customUseMinor_, customFixedRegister_;
     Grid customContextGrid_{2, 26};
-    look::Note customIntro_, customStatus_, customContextNote_;
+    look::Note customIntro_, customStatus_, customContextNote_, customFixedRegisterNote_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aCustomOn_,
-        aCustomUseMajor_, aCustomUseMinor_;
+        aCustomUseMajor_, aCustomUseMinor_, aCustomFixedRegister_;
 
     // Which (context, degree) the keyboard editor below is showing right now
     // -- pure UI state, not a parameter; the dictionary itself is written
@@ -1287,6 +1501,7 @@ private:
     juce::OwnedArray<juce::TextButton> degreeButtons_;
     Grid degreeGrid_{6, 24};
     look::Note customVoicingLabel_, customVoicingStatus_, customKeyboardNote_;
+    std::unique_ptr<look::StatRow> drawnChordRow_;
     juce::TextButton clearVoicingButton_;
     Holder customVoicingRow_;
     juce::TextButton recordButton_, recordResetButton_, recordSaveButton_;

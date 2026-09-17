@@ -137,6 +137,30 @@ struct Settings {
 
     int maxNotes = kMaxVoicingNotes;
 
+    // Nudges the placement search away from packing notes tight together
+    // below mudCeiling (a MIDI note), where a close interval reads as mush
+    // rather than a chord. A preference, not a wall -- style, range and voice
+    // leading can still outweigh it.
+    bool avoidMud = false;
+    int  mudCeiling = 55;       // G3
+
+    // Adds one extra voice a register below the rest of the chord, always the
+    // chord's root. Counts against maxNotes -- turning this on with the count
+    // already at the cap sheds the chord's least important tone to make room
+    // rather than silently exceeding what was asked for.
+    bool addBassNote = false;
+
+    // A custom voicing normally gets re-registered every chord: which octave
+    // it lands in is chosen fresh each time to lead smoothly from whatever
+    // came before and to sit near the middle of the range below. Turning this
+    // on skips that search for custom voicings and always places them at the
+    // one octave nearest the middle of rangeLow..rangeHigh, so a voicing
+    // built to sit in a specific register (a bass note on C3, say) stays
+    // there instead of drifting to chase the melody or the previous chord.
+    // Still folded back in if that register is further from the played note
+    // than the engine can reach -- staying in tune wins over staying put.
+    bool customVoicingFixedRegister = false;
+
     // A custom dictionary replaces the built-in chord-per-degree lookup,
     // context by context (see CustomDictionary above). Everything else in
     // this struct -- extensions, register, smoothness, style and voice count

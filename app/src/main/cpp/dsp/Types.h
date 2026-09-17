@@ -103,6 +103,16 @@ struct Params {
     // caller that wants a deliberately smoother hand-off between chords (see
     // jazz mode's Glide) raises it instead of fighting the floor.
     std::atomic<float> glideMs{0.0f};
+
+    // Every voice is really a retuned copy of whatever the live input's
+    // spectrum looks like right now -- there is no sample playing underneath,
+    // so a "held" note still goes silent the instant the player stops feeding
+    // it audio. Turning this on lets a hop with a near-silent input frame
+    // keep reusing the last real analysis instead of re-analysing near
+    // nothing, so the chord actually rings out rather than dying with the
+    // input. A caller sets it only while it wants that hold to be in effect
+    // (e.g. jazz mode's sustain pedal, held) -- it is not a persistent mode.
+    std::atomic<bool>  sustainFreeze{false};
 };
 
 struct MidiEvent {
