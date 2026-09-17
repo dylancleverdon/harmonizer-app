@@ -4,6 +4,7 @@
 
 #include "JazzMidiImport.h"
 
+#include <algorithm>
 #include <mutex>
 #include <vector>
 
@@ -583,13 +584,29 @@ HarmonizerAudioProcessor::importJazzCustomDictionaryFromMidiFile(const juce::Fil
         return summary;
     }
 
+    // Analysis only -- held as the pending result rather than written to the
+    // live dictionary, so running this can never overwrite work you're still
+    // doing. See useJazzPendingMidiImport() and the methods around it.
+    jazzPendingMidiImport_ = result;
+
+    summary.ok = true;
+    summary.keySegments = result.keySegments;
+    summary.chordsAnalyzed = result.chordsAnalyzed;
+    summary.degreesFilled = result.degreesFilled;
+    return summary;
+}
+
+bool HarmonizerAudioProcessor::useJazzPendingMidiImport() {
+    if (jazzPendingMidiImport_.keySegments == 0) return false;
+
     // Replaces the whole dictionary -- the same "start fresh from this" a
     // preset load gives, since a partial merge with whatever was there
     // before would leave it unclear which degrees came from which source.
     for (int ctx = 0; ctx < 2; ++ctx) {
         const bool minor = ctx == 1;
         for (int degree = 0; degree < 12; ++degree) {
-            const auto& entry = minor ? result.dict.minor[degree] : result.dict.major[degree];
+            const auto& entry =
+                minor ? jazzPendingMidiImport_.dict.minor[degree] : jazzPendingMidiImport_.dict.major[degree];
             clearJazzCustomVoicing(minor, degree);
             for (int i = 0; i < entry.count; ++i) {
                 setJazzCustomVoicingNote(minor, degree, entry.offsets[i], true);
@@ -599,12 +616,52 @@ HarmonizerAudioProcessor::importJazzCustomDictionaryFromMidiFile(const juce::Fil
     setParamValue(ParamId::jazzCustomUseMajor, 1.0f);
     setParamValue(ParamId::jazzCustomUseMinor, 1.0f);
     setParamValue(ParamId::jazzCustomOn, 1.0f);
+    return true;
+}
 
-    summary.ok = true;
-    summary.keySegments = result.keySegments;
-    summary.chordsAnalyzed = result.chordsAnalyzed;
-    summary.degreesFilled = result.degreesFilled;
-    return summary;
+bool HarmonizerAudioProcessor::saveJazzPendingMidiImportAsPreset(const juce::String& name) const {
+    if (jazzPendingMidiImport_.keySegments == 0) return false;
+    return writeDictionaryPreset(name, jazzPendingMidiImport_.dict);
+}
+
+int HarmonizerAudioProcessor::jazzPendingMidiImportCandidateCount() const {
+    return static_cast<int>(jazzPendingMidiImport_.candidates.size());
+}
+
+jazz::ImportCandidate HarmonizerAudioProcessor::jazzPendingMidiImportCandidate(int index) const {
+    if (index < 0 || index >= jazzPendingMidiImportCandidateCount()) return {};
+    return jazzPendingMidiImport_.candidates[static_cast<size_t>(index)];
+}
+
+void HarmonizerAudioProcessor::previewJazzMidiCandidate(int index) {
+    if (index < 0 || index >= jazzPendingMidiImportCandidateCount()) return;
+    const auto& c = jazzPendingMidiImport_.candidates[static_cast<size_t>(index)];
+
+    // A custom voicing is always rooted on the note actually played, so --
+    // exactly like the keyboard editor's own previewRootNote() -- the key
+    // it was sampled under doesn't matter to how it sounds; middle C plus
+    // the degree it was found on gives it a concrete root to preview at.
+    const int root = 60 + ((c.degree % 12 + 12) % 12);
+    juce::Array<int> notes;
+    for (int i = 0; i < c.count; ++i) notes.add(root + c.offsets[i]);
+    previewJazzVoicing(notes, root);
+}
+
+bool HarmonizerAudioProcessor::saveJazzMidiCandidateToLibrary(
+    int index, const juce::String& name, const juce::String& artist, const juce::String& song,
+    jazz::LibraryTheme theme, jazz::LibraryQuality quality) {
+    if (index < 0 || index >= jazzPendingMidiImportCandidateCount()) return false;
+    const auto& c = jazzPendingMidiImport_.candidates[static_cast<size_t>(index)];
+
+    UserLibraryEntry entry;
+    entry.name = name;
+    entry.artist = artist;
+    entry.song = song;
+    entry.theme = theme;
+    entry.quality = quality;
+    entry.count = juce::jlimit(0, jazz::kMaxVoicingNotes, c.count);
+    for (int i = 0; i < entry.count; ++i) entry.offsets[i] = c.offsets[i];
+    return saveJazzUserLibraryEntry(entry);
 }
 
 void HarmonizerAudioProcessor::addJazzCustomRecordedNote(int note) {
@@ -1413,29 +1470,38 @@ juce::StringArray HarmonizerAudioProcessor::jazzDictionaryPresetNames() const {
     return names;
 }
 
-bool HarmonizerAudioProcessor::saveJazzDictionaryPreset(const juce::String& name) const {
+bool HarmonizerAudioProcessor::writeDictionaryPreset(const juce::String& name,
+                                                      const jazz::CustomDictionary& dict) const {
     if (name.trim().isEmpty()) return false;
 
     juce::XmlElement root("HarmonizerJazzDictionary");
     root.setAttribute("version", 2);
-    root.setAttribute("useMajor", pJazzCustomUseMajor_->load() > 0.5f);
-    root.setAttribute("useMinor", pJazzCustomUseMinor_->load() > 0.5f);
+    root.setAttribute("useMajor", dict.useMajor);
+    root.setAttribute("useMinor", dict.useMinor);
     for (int ctx = 0; ctx < 2; ++ctx) {
         const bool minor = ctx == 1;
         for (int degree = 0; degree < 12; ++degree) {
             auto* el = root.createNewChildElement(minor ? "Minor" : "Major");
             el->setAttribute("degree", degree);
 
+            const jazz::CustomEntry& entry = minor ? dict.minor[degree] : dict.major[degree];
             juce::StringArray offsets;
-            for (int slot = 0; slot < jazz::kMaxVoicingNotes; ++slot) {
-                const int raw = static_cast<int>(
-                    std::lround(pJazzCustomOffset_[ctx][degree][slot]->load()));
-                if (raw > 0) offsets.add(juce::String(jazzCustomRawToOffset(raw)));
-            }
+            for (int i = 0; i < entry.count; ++i) offsets.add(juce::String(entry.offsets[i]));
             el->setAttribute("offsets", offsets.joinIntoString(","));
         }
     }
     return root.writeTo(jazzPresetFile(name));
+}
+
+bool HarmonizerAudioProcessor::saveJazzDictionaryPreset(const juce::String& name) const {
+    jazz::CustomDictionary dict;
+    dict.useMajor = pJazzCustomUseMajor_->load() > 0.5f;
+    dict.useMinor = pJazzCustomUseMinor_->load() > 0.5f;
+    for (int degree = 0; degree < 12; ++degree) {
+        dict.major[degree] = jazzCustomEntry(false, degree);
+        dict.minor[degree] = jazzCustomEntry(true, degree);
+    }
+    return writeDictionaryPreset(name, dict);
 }
 
 bool HarmonizerAudioProcessor::loadJazzDictionaryPreset(const juce::String& name) {
@@ -1496,6 +1562,86 @@ bool HarmonizerAudioProcessor::loadJazzDictionaryPreset(const juce::String& name
 
 bool HarmonizerAudioProcessor::deleteJazzDictionaryPreset(const juce::String& name) const {
     return jazzPresetFile(name).deleteFile();
+}
+
+// ---------------------------------------------------------------------------
+// Personal chord library entries: one chord a player has chosen to keep, with
+// a credit, stored the same way (one small XML file per entry) and for the
+// same reason (independent of any DAW project) as a dictionary preset above.
+// ---------------------------------------------------------------------------
+
+juce::File HarmonizerAudioProcessor::jazzUserLibraryDirectory() {
+    auto dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                   .getChildFile("Harmonizer")
+                   .getChildFile("JazzLibraryEntries");
+    dir.createDirectory();
+    return dir;
+}
+
+namespace {
+juce::File jazzUserLibraryFile(const juce::String& name) {
+    return HarmonizerAudioProcessor::jazzUserLibraryDirectory().getChildFile(
+        juce::File::createLegalFileName(name.trim()) + ".xml");
+}
+}  // namespace
+
+juce::Array<HarmonizerAudioProcessor::UserLibraryEntry>
+HarmonizerAudioProcessor::jazzUserLibraryEntries() const {
+    juce::Array<UserLibraryEntry> entries;
+    for (const auto& f : jazzUserLibraryDirectory().findChildFiles(
+             juce::File::findFiles, false, "*.xml")) {
+        auto xml = juce::XmlDocument::parse(f);
+        if (xml == nullptr || !xml->hasTagName("HarmonizerJazzLibraryEntry")) continue;
+
+        UserLibraryEntry e;
+        e.name = xml->getStringAttribute("name", f.getFileNameWithoutExtension());
+        e.description = xml->getStringAttribute("description");
+        e.artist = xml->getStringAttribute("artist");
+        e.song = xml->getStringAttribute("song");
+        e.theme = static_cast<jazz::LibraryTheme>(
+            juce::jlimit(0, jazz::kLibraryThemeCount - 1, xml->getIntAttribute("theme", 0)));
+        e.quality = static_cast<jazz::LibraryQuality>(
+            juce::jlimit(0, jazz::kLibraryQualityCount - 1, xml->getIntAttribute("quality", 0)));
+
+        const auto parts = juce::StringArray::fromTokens(xml->getStringAttribute("offsets"), ",", "");
+        for (const auto& part : parts) {
+            if (e.count >= jazz::kMaxVoicingNotes) break;
+            if (part.trim().isEmpty()) continue;
+            e.offsets[e.count++] =
+                juce::jlimit(-jazz::kMaxCustomOffset, jazz::kMaxCustomOffset, part.getIntValue());
+        }
+        if (e.count > 0) entries.add(e);
+    }
+    std::sort(entries.begin(), entries.end(), [](const UserLibraryEntry& a, const UserLibraryEntry& b) {
+        return a.name.compareIgnoreCase(b.name) < 0;
+    });
+    return entries;
+}
+
+bool HarmonizerAudioProcessor::saveJazzUserLibraryEntry(const UserLibraryEntry& entry) const {
+    // Attribution is required, not just prompted for -- enforced here rather
+    // than only in the editor, so nothing can slip a credit-less entry into
+    // the library through a different call path.
+    if (entry.name.trim().isEmpty() || entry.artist.trim().isEmpty() || entry.count <= 0) return false;
+
+    juce::XmlElement root("HarmonizerJazzLibraryEntry");
+    root.setAttribute("version", 1);
+    root.setAttribute("name", entry.name);
+    root.setAttribute("description", entry.description);
+    root.setAttribute("artist", entry.artist);
+    root.setAttribute("song", entry.song);
+    root.setAttribute("theme", static_cast<int>(entry.theme));
+    root.setAttribute("quality", static_cast<int>(entry.quality));
+
+    juce::StringArray offsets;
+    for (int i = 0; i < entry.count; ++i) offsets.add(juce::String(entry.offsets[i]));
+    root.setAttribute("offsets", offsets.joinIntoString(","));
+
+    return root.writeTo(jazzUserLibraryFile(entry.name));
+}
+
+bool HarmonizerAudioProcessor::deleteJazzUserLibraryEntry(const juce::String& name) const {
+    return jazzUserLibraryFile(name).deleteFile();
 }
 
 int HarmonizerAudioProcessor::jazzFactoryDictionaryPresetCount() const {

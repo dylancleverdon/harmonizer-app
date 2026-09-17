@@ -761,6 +761,42 @@ int main() {
 
         check(result.chordsAnalyzed > 0, "sampled at least one chord");
 
+        // --- Candidates: every distinct voicing actually seen, not just the
+        // one winner per degree dict kept -- what lets a caller pull out a
+        // single chord instead of only ever taking the whole dictionary.
+        check(!result.candidates.empty(), "the analysis surfaces individual chord candidates too");
+
+        bool candidatesSorted = true;
+        for (size_t i = 1; i < result.candidates.size(); ++i) {
+            if (result.candidates[i].votes > result.candidates[i - 1].votes) candidatesSorted = false;
+        }
+        check(candidatesSorted, "candidates are sorted most-played first");
+
+        bool candidatesValid = true;
+        for (const auto& c : result.candidates) {
+            if (c.count <= 0 || c.count > jazz::kMaxVoicingNotes) { candidatesValid = false; continue; }
+            for (int i = 0; i < c.count; ++i) {
+                if (c.offsets[i] < -jazz::kMaxCustomOffset || c.offsets[i] > jazz::kMaxCustomOffset) {
+                    candidatesValid = false;
+                }
+            }
+        }
+        check(candidatesValid, "every candidate has a valid, in-range count and offsets");
+
+        bool foundTonicCandidate = false;
+        for (const auto& c : result.candidates) {
+            if (c.minor || c.degree != 0 || c.count != 3) continue;
+            bool has3 = false, has5 = false, has7 = false;
+            for (int i = 0; i < c.count; ++i) {
+                if (c.offsets[i] == 4) has3 = true;
+                if (c.offsets[i] == 7) has5 = true;
+                if (c.offsets[i] == 11) has7 = true;
+            }
+            if (has3 && has5 && has7) { foundTonicCandidate = c.votes > 0; break; }
+        }
+        check(foundTonicCandidate,
+              "the tonic maj7 voicing shows up as its own candidate with real votes");
+
         // Nothing at all: no notes, or ticksPerQuarterNote <= 0 (an SMPTE-
         // timed file, which this does not understand).
         const auto empty = jazz::analyzeForCustomDictionary(nullptr, 0, tpq);
@@ -801,6 +837,22 @@ int main() {
         }
         checkf(allValid, "every entry has a valid, in-range count and offsets (%d entries)", total);
         check(allNamed, "every entry has a name and a description");
+
+        // Attribution: a song credited without an artist would be an
+        // orphaned, unreadable credit, and at least a few entries ought to
+        // actually carry one -- otherwise the field exists but nothing uses
+        // it.
+        bool attributionConsistent = true;
+        int attributedCount = 0;
+        for (int i = 0; i < total; ++i) {
+            const auto& v = jazz::libraryVoicing(i);
+            const bool hasArtist = v.artist != nullptr && v.artist[0] != '\0';
+            const bool hasSong = v.song != nullptr && v.song[0] != '\0';
+            if (hasSong && !hasArtist) attributionConsistent = false;
+            if (hasArtist) ++attributedCount;
+        }
+        check(attributionConsistent, "no entry credits a song without also crediting an artist");
+        check(attributedCount > 0, "at least one entry actually carries an attribution");
 
         // Every theme is actually used -- a theme nobody voices for would
         // sit in the browser's filter chips with an empty list behind it.
