@@ -180,6 +180,11 @@ public:
         // dsp::Params::glideMs. Only applied while jazz mode is on.
         static constexpr const char* jazzGlideMs = "jazzGlideMs";
 
+        // How long the played note has to sit still before the chord follows
+        // it -- see jazzUpdate()'s stability gate. Higher trades a little
+        // response time for a steadier chord under vibrato and breath noise.
+        static constexpr const char* jazzChordHoldMs = "jazzChordHoldMs";
+
         // Custom chord dictionary: a user-built alternative to the dictionary
         // baked into JazzVoicer.cpp. Plugin only, and off by default -- with
         // it off, or with both context toggles below off, jazz mode is
@@ -335,6 +340,7 @@ private:
     std::atomic<float>* pJazzTransposeAudioIn_ = nullptr;
     std::atomic<float>* pJazzLatchKeys_ = nullptr;
     std::atomic<float>* pJazzGlideMs_ = nullptr;
+    std::atomic<float>* pJazzChordHoldMs_ = nullptr;
 
     std::atomic<float>* pJazzCustomOn_ = nullptr;
     std::atomic<float>* pJazzCustomUseMajor_ = nullptr;
@@ -404,6 +410,12 @@ private:
     int  jazzDecisionCountdown_ = 0;         // samples until the next decision
     int  jazzCandidateNote_ = -1;
     int  jazzCandidateTicks_ = 0;
+    // The note the chord is currently built on, once the stability gate has
+    // accepted one -- distinct from jazzCandidateNote_, which tracks a
+    // reading that has not (yet) survived that gate. Read a wider band
+    // around this than kJazzCentsWindow before letting a wobble count as a
+    // move away from it; see jazzUpdate()'s hysteresis check.
+    int  jazzLockedNote_ = -1;
     uint64_t jazzInputHash_ = 0;
     std::atomic<bool> jazzPanic_{false};
 

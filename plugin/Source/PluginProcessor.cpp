@@ -32,14 +32,18 @@ constexpr int kFftSizes[] = {256, 512, 1024, 2048};
 constexpr int kJazzOctaves[] = {-2, -1, 0, 1, 2};
 constexpr int kJazzInversions[] = {-3, -2, -1, 0, 1, 2, 3};
 
-// How often the played note is re-read, and how long it has to stay put before
-// the chord follows it. Five milliseconds is far finer than anyone plays, and
-// three of them is quick enough to feel instant while still ignoring the slide
-// through a neighbouring note on the way to this one.
+// How often the played note is re-read. Five milliseconds is far finer than
+// anyone plays; how long a reading has to hold before the chord follows it is
+// the jazzChordHoldMs parameter, converted to a tick count below.
 constexpr double kJazzDecisionSeconds = 0.005;
-constexpr int    kJazzStableTicks = 3;
-// Within this much of a tempered note, the reading is taken as that note.
+// Within this much of a tempered note, a fresh reading is taken as that note.
 constexpr float  kJazzCentsWindow = 40.0f;
+// Once a note is locked in, a reading has to move this much further from it
+// -- past the 50-cent halfway point to its neighbour -- before it is allowed
+// to count as having left. This dead zone is what stops vibrato and breath
+// noise that wobble across the boundary between two notes from reading as a
+// rapid back-and-forth between them.
+constexpr float  kJazzHysteresisCents = 65.0f;
 
 template <typename T, size_t N>
 int pick(const T (&table)[N], float normalisedIndex) {
@@ -123,6 +127,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzTransposeAudioIn_ = apvts.getRawParameterValue(ParamId::jazzTransposeAudioIn);
     pJazzLatchKeys_ = apvts.getRawParameterValue(ParamId::jazzLatchKeys);
     pJazzGlideMs_ = apvts.getRawParameterValue(ParamId::jazzGlideMs);
+    pJazzChordHoldMs_ = apvts.getRawParameterValue(ParamId::jazzChordHoldMs);
 
     pJazzCustomOn_ = apvts.getRawParameterValue(ParamId::jazzCustomOn);
     pJazzCustomUseMajor_ = apvts.getRawParameterValue(ParamId::jazzCustomUseMajor);
@@ -299,6 +304,17 @@ HarmonizerAudioProcessor::createLayout() {
         NormalisableRange<float>(0.0f, 400.0f, 1.0f), 0.0f,
         AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) {
             return v < 1.0f ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
+        })));
+
+    // How long the played note has to hold still before the chord follows it.
+    // 60 ms is short enough to feel instant on a clean attack but long enough
+    // to ride out a typical vibrato wobble (5-8 Hz, i.e. a full cycle every
+    // 125-200 ms) without re-triggering mid-note.
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{ParamId::jazzChordHoldMs, 1}, "Chord Hold",
+        NormalisableRange<float>(5.0f, 250.0f, 1.0f), 60.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) {
+            return juce::String(juce::roundToInt(v)) + " ms";
         })));
 
     // --- Jazz custom chord dictionary ---------------------------------------
@@ -581,6 +597,7 @@ void HarmonizerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
     jazzCandidateTicks_ = 0;
+    jazzLockedNote_ = -1;
     jazzInputHash_ = 0;
     jazzDecisionCountdown_ = 0;
     jazzOn_ = pJazzMode_->load() > 0.5f;
@@ -807,6 +824,7 @@ void HarmonizerAudioProcessor::jazzReconfigure(bool enabled) {
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
     jazzCandidateTicks_ = 0;
+    jazzLockedNote_ = -1;
     jazzInputHash_ = 0;
     jazzDecisionCountdown_ = 0;
     jazzLatchActive_ = false;
@@ -846,6 +864,7 @@ void HarmonizerAudioProcessor::jazzSilence() {
     jazzVoicer_.reset();
     jazzCandidateNote_ = -1;
     jazzCandidateTicks_ = 0;
+    jazzLockedNote_ = -1;
     jazzInputHash_ = 0;
     jvSounding_.store(false);
     jvCount_.store(0);
@@ -1003,6 +1022,7 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         jazzVoiceCount_ = 0;
         jazzInputHash_ = 0;
         jazzCandidateTicks_ = 0;
+        jazzLockedNote_ = -1;
     }
 
     int liveKeys[16];
@@ -1058,22 +1078,36 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
     }
 
     const float midiPitch = 69.0f + 12.0f * std::log2(hz / 440.0f);
-    const int note = juce::roundToInt(midiPitch);
-    if (note < 0 || note > 127) return;
+    const int nearest = juce::roundToInt(midiPitch);
+    if (nearest < 0 || nearest > 127) return;
 
-    // Halfway between two notes is a slide, not a note. Waiting it out stops the
-    // chord flickering on the way into a phrase.
-    if (std::abs(midiPitch - static_cast<float>(note)) * 100.0f > kJazzCentsWindow) return;
+    int note = nearest;
+    if (jazzLockedNote_ >= 0 &&
+        std::abs((midiPitch - static_cast<float>(jazzLockedNote_)) * 100.0f) <= kJazzHysteresisCents) {
+        // Still inside the dead zone around the note already locked in, even
+        // though a different tempered note now nominally sits closer. Keep
+        // reading it as the locked note -- this is what stops vibrato that
+        // wobbles across a semitone boundary from flickering the chord.
+        note = jazzLockedNote_;
+    } else if (std::abs(midiPitch - static_cast<float>(nearest)) * 100.0f > kJazzCentsWindow) {
+        // Halfway between two notes and not near the locked one either -- a
+        // slide, not a note. Waiting it out stops the chord flickering on the
+        // way into a phrase.
+        return;
+    }
 
     if (note != jazzCandidateNote_) {
         jazzCandidateNote_ = note;
         jazzCandidateTicks_ = 1;
         return;
     }
-    if (jazzCandidateTicks_ < kJazzStableTicks) {
+    const int stableTicks = juce::jmax(
+        1, static_cast<int>(pJazzChordHoldMs_->load() / (kJazzDecisionSeconds * 1000.0) + 0.5));
+    if (jazzCandidateTicks_ < stableTicks) {
         ++jazzCandidateTicks_;
         return;
     }
+    jazzLockedNote_ = note;
 
     const jazz::Settings settings = jazzSettings();
 

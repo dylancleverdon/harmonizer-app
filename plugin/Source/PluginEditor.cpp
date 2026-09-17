@@ -547,6 +547,17 @@ public:
             "was already sustaining through the change.");
         leading.addRow(glideNote_, 58);
 
+        chordHoldLabel_.setText("CHORD HOLD", look::muted);
+        leading.addRow(chordHoldLabel_, 14);
+        styleSlider(chordHoldSlider_);
+        leading.addRow(chordHoldSlider_, 24);
+        chordHoldNote_.setText(
+            "How long the played note has to sit still before the chord follows it. Raising this "
+            "is the main fix for a chord that flickers between two neighbours under vibrato or a "
+            "breathy attack -- it trades a little response time for a steadier read. Lowering it "
+            "makes the chord follow fast lines more instantly, at the cost of being twitchier.");
+        leading.addRow(chordHoldNote_, 58);
+
         // --- Styles.
         auto& styles = addCard("Voicing style");
         stylesNote_.setText("Choose as many as you like and the best of them for the moment is "
@@ -940,6 +951,7 @@ public:
         aTransposeAudio_ = std::make_unique<SA>(apvts, P::jazzTransposeAudioIn, transposeAudioSlider_);
         aLatch_ = std::make_unique<BA>(apvts, P::jazzLatchKeys, latch_);
         aGlide_ = std::make_unique<SA>(apvts, P::jazzGlideMs, glideSlider_);
+        aChordHold_ = std::make_unique<SA>(apvts, P::jazzChordHoldMs, chordHoldSlider_);
 
         aCustomOn_ = std::make_unique<BA>(apvts, P::jazzCustomOn, customOn_);
         aCustomUseMajor_ = std::make_unique<BA>(apvts, P::jazzCustomUseMajor, customUseMajor_);
@@ -969,11 +981,15 @@ public:
         glideSlider_.textFromValueFunction = [](double v) {
             return v < 1.0 ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " ms";
         };
+        chordHoldSlider_.textFromValueFunction = [](double v) {
+            return juce::String(juce::roundToInt(v)) + " ms";
+        };
         lowSlider_.updateText();
         highSlider_.updateText();
         transposeSlider_.updateText();
         transposeAudioSlider_.updateText();
         glideSlider_.updateText();
+        chordHoldSlider_.updateText();
         smoothSlider_.updateText();
     }
 
@@ -1228,9 +1244,9 @@ private:
     Grid toneGrid_{3, 26}, styleGrid_{3, 26};
 
     juce::Slider lowSlider_, highSlider_, smoothSlider_, voicesSlider_, transposeSlider_,
-        transposeAudioSlider_, glideSlider_;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_;
-    look::Note glideLabel_, glideNote_;
+        transposeAudioSlider_, glideSlider_, chordHoldSlider_;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aGlide_, aChordHold_;
+    look::Note glideLabel_, glideNote_, chordHoldLabel_, chordHoldNote_;
     juce::ToggleButton voicesAuto_, latch_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aVoicesAuto_, aLatch_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_,

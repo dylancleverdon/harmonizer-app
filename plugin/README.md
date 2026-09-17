@@ -159,6 +159,14 @@ extensions are switched on — rather than a number picked ahead of time.
 * **Voice leading** — at 0 % every chord is voiced in its own best register,
   wherever that leaves the last one. At 100 % the voicing that moves least from
   the chord before it wins, even where that means an odd register.
+* **Chord Hold** — how long the played note has to sit still before the chord
+  follows it. This is the main dial for a chord that flickers between two
+  neighbouring notes under vibrato or a breathy attack: raising it trades a
+  little response time for a steadier read; lowering it makes the chord
+  follow fast lines more instantly, at the cost of being twitchier. It works
+  alongside a fixed dead zone around whichever note is already locked in — see
+  *How it is put together* below — so ordinary vibrato is filtered out even
+  at the default setting.
 * **Glide** — chord changes as pitch portamento instead of a retrigger. Each
   voice in the old chord is matched to one in the new chord and slides to
   it over however many milliseconds this is set to, rather than stopping
@@ -253,9 +261,16 @@ The dictionary and the voicer are `plugin/Source/JazzVoicer.{h,cpp}`: integer
 music theory with no JUCE, no engine and no allocation, so they can be tested on
 their own (`plugin/Tests/JazzHarness.cpp` builds with one compiler invocation)
 and so none of this reaches the app. `PluginProcessor` reads the played pitch
-from the engine's own tracker, asks the voicer for a chord when the pitch has
-held still for about 15 ms, and feeds the result to the engine as MIDI in
-absolute-pitch mode. Notes common to the old chord and the new one are left
+from the engine's own tracker, asks the voicer for a chord once the pitch has
+held still for **Chord Hold**'s duration, and feeds the result to the engine
+as MIDI in absolute-pitch mode. Two separate mechanisms keep that reading
+from flickering: the stability window itself (`jazzCandidateNote_` /
+`jazzCandidateTicks_` in `jazzUpdate()`, `PluginProcessor.cpp`), and a fixed
+65-cent hysteresis band around whichever note is already locked in
+(`jazzLockedNote_`) — once a note has settled, the reading has to move
+further to count as having left it than it took to arrive, so vibrato and
+breath noise that wobble across the boundary between two tempered notes keep
+reading as the one note that is actually sounding. Notes common to the old chord and the new one are left
 alone rather than retriggered, so a held common tone really does sustain through
 the change. The custom dictionary lives in the same `Settings`/`Voicer` pair as
 everything else in jazz mode -- it is a per-context override of the lookup,
