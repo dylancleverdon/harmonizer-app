@@ -714,6 +714,133 @@ static void testJazzGlide() {
               juce::String(p.metrics().activeVoices) + ")");
 }
 
+// Vibrato that wobbles right across the tempered boundary between two notes
+// should never flicker the chord: once jazzUpdate() locks a note in, it takes
+// a wider swing to be read as having left than it took to arrive, so a wobble
+// that stays inside that dead zone keeps reading as the same note. This
+// synthesises exactly that -- a tone centred on the boundary between two
+// notes, with vibrato depth comfortably inside the dead zone but well past
+// the plain rounding line -- and checks the published chord never changes
+// once it has first settled.
+static void testJazzChordStability() {
+    std::printf("\n-- Jazz chord stability (vibrato) --\n");
+    const double sr = 48000.0;
+
+    HarmonizerAudioProcessor p;
+    setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+    setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+
+    // First half a second dead on A#3 (58, 233.08 Hz) -- plain enough to lock
+    // in well within the default hold time. The second second adds vibrato
+    // deep enough that the raw pitch actually crosses the 50-cent rounding
+    // line into A3's territory and back (what would flicker the chord
+    // without hysteresis), while never moving more than 55 cents from the
+    // note that already locked in -- comfortably inside the wider dead zone
+    // hysteresis gives it.
+    const double centreMidi = 58.0;
+    const double settleSeconds = 0.5;
+    const double depthCents = 55.0;
+    const double rateHz = 6.0;
+    const int total = static_cast<int>(sr * 1.5);
+    const int settleSamples = static_cast<int>(sr * settleSeconds);
+    std::vector<float> source(static_cast<size_t>(total));
+    double phase = 0.0;
+    for (int n = 0; n < total; ++n) {
+        const double vibrato =
+            n < settleSamples ? 0.0 : depthCents * std::sin(2.0 * kPi * rateHz * (n - settleSamples) / sr);
+        const double midi = centreMidi + vibrato / 100.0;
+        const double f0 = 440.0 * std::pow(2.0, (midi - 69.0) / 12.0);
+        double s = 0.0;
+        for (int h = 1; h <= 24; ++h) {
+            if (f0 * h > sr * 0.45) break;
+            s += std::sin(phase * h) / h;
+        }
+        source[static_cast<size_t>(n)] = static_cast<float>(s * 0.25);
+        phase += 2.0 * kPi * f0 / sr;
+    }
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+    bool sent = false;
+    int firstRoot = -1, firstMelodyNote = -1;
+    bool anySounding = false, stable = true;
+    for (int pos = 0; pos < total; pos += 256) {
+        const int n = juce::jmin(256, total - pos);
+        buffer.setSize(1, n, false, false, true);
+        juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+        juce::MidiBuffer midi;
+        if (!sent) { midi.addEvent(keyOn, 0); sent = true; }
+        p.processBlock(buffer, midi);
+
+        const auto v = p.jazzView();
+        if (!v.sounding) continue;
+        anySounding = true;
+        if (firstRoot < 0) {
+            firstRoot = v.chordRootPc;
+            firstMelodyNote = v.melodyNote;
+        } else if (v.chordRootPc != firstRoot || v.melodyNote != firstMelodyNote) {
+            stable = false;
+        }
+    }
+
+    check(anySounding, "the chord settles at some point during the vibrato");
+    check(stable, "a semitone-straddling vibrato never flickers the chord once it settles");
+}
+
+// jazzChordHoldMs is the user-facing knob on how long a reading has to hold
+// before the chord follows it. This checks it is actually wired up: a much
+// longer hold measurably delays when a clean, unwavering tone first settles
+// into a chord, relative to a much shorter one.
+static void testJazzChordHoldTiming() {
+    std::printf("\n-- Jazz chord hold timing --\n");
+    const double sr = 48000.0;
+
+    const auto settleBlocks = [&](float holdMs) -> int {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzChordHoldMs, holdMs);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, 261.63, sr);   // C4, steady -- no vibrato in this one
+
+        juce::AudioBuffer<float> buffer(1, 256);
+        auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+        bool sent = false;
+        int blocks = 0;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (!sent) { midi.addEvent(keyOn, 0); sent = true; }
+            p.processBlock(buffer, midi);
+            ++blocks;
+            if (p.jazzView().sounding) return blocks;
+        }
+        return -1;   // never settled
+    };
+
+    const int shortHold = settleBlocks(5.0f);
+    const int longHold = settleBlocks(250.0f);
+    check(shortHold > 0 && longHold > 0, "the chord settles under both a short and a long hold time");
+    check(longHold > shortHold,
+          juce::String("a longer Chord Hold measurably delays when the chord settles (short=") +
+              juce::String(shortHold) + " blocks, long=" + juce::String(longHold) + " blocks)");
+    // The two hold times differ by 245 ms; a generous margin below that
+    // (rather than pinning the exact figure) is enough to prove the
+    // parameter drives the delay without coupling the test to the detector's
+    // own warm-up time.
+    const double blockMs = 256.0 / sr * 1000.0;
+    check((longHold - shortHold) * blockMs > 150.0,
+          "the extra delay roughly tracks the 245 ms difference in hold time");
+}
+
 // Auto harmony voices ignores the Chord Voices slider entirely and lets
 // through exactly as many notes as the chord naturally has -- extensions
 // included -- rather than the number picked ahead of time.
@@ -1115,6 +1242,8 @@ int main() {
     testJazzLatch();
     testJazzSustain();
     testJazzGlide();
+    testJazzChordStability();
+    testJazzChordHoldTiming();
     testJazzAutoVoices();
     testJazzCustomDictionary();
 
