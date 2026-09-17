@@ -412,7 +412,13 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     const int askedLow = clampi(s.rangeLow, 0, 115);
     const int askedHigh = clampi(s.rangeHigh < askedLow + 12 ? askedLow + 12 : s.rangeHigh,
                                  askedLow + 12, 127);
-    const int maxNotes = clampi(s.maxNotes, 1, kMaxVoicingNotes);
+    // A bass note reserves one of the requested voices for itself -- shedding
+    // the chord's least important tone to make room, the same way asking for
+    // fewer notes than the chord has always has. Never below one, so the
+    // chord body is never displaced entirely.
+    const int requestedMaxNotes = clampi(s.maxNotes, 1, kMaxVoicingNotes);
+    const int maxNotes =
+        s.addBassNote ? clampi(requestedMaxNotes - 1, 1, kMaxVoicingNotes) : requestedMaxNotes;
 
     // Intersect the range with what the engine can actually reach from the note
     // being played. Without this a chord voiced more than two octaves away comes
@@ -498,7 +504,21 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
                                          static_cast<float>(shapeCount);
         styleTarget = static_cast<float>(clampi(static_cast<int>(styleTarget), lo + 6, hi - 6));
 
-        for (int rootNote = rootPc; rootNote <= 127; rootNote += 12) {
+        // Normally every octave of the root is a candidate, scored below like
+        // anything else -- which is exactly what lets voice leading pull a
+        // custom voicing's register around to stay close to the previous
+        // chord. Locked, there is only one candidate: the octave nearest
+        // styleTarget, so a voicing built to sit in a specific register (a
+        // bass note on C3, say) stays there instead of drifting. It still
+        // goes through the same fold/dedupe/scoring below, just with nothing
+        // else to be outscored by.
+        const bool lockedRegister = usingCustomVoicing && s.customVoicingFixedRegister;
+        const int lockedRootNote =
+            rootPc + 12 * static_cast<int>(std::lround((styleTarget - static_cast<float>(rootPc)) / 12.0f));
+        const int rootNoteStart = lockedRegister ? lockedRootNote : rootPc;
+        const int rootNoteEnd = lockedRegister ? lockedRootNote : 127;
+
+        for (int rootNote = rootNoteStart; rootNote <= rootNoteEnd; rootNote += 12) {
             int note[kMaxVoicingNotes];
             int deg[kMaxVoicingNotes];
             int count = shapeCount;
@@ -607,12 +627,31 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
                 }
             }
 
+            // Mud: two voiced tones a second apart down low read as a smear
+            // rather than a chord -- thirds and wider are completely normal
+            // even down there, so only seconds are penalised. note[] is
+            // ascending, so adjacent entries are each pair's actual gap. A
+            // preference, like clash above -- style, range and voice leading
+            // can still win.
+            float mud = 0.0f;
+            if (s.avoidMud) {
+                constexpr int kMudMinInterval = 3;   // a minor third; avoid seconds only
+                for (int i = 1; i < count; ++i) {
+                    if (note[i] >= s.mudCeiling) continue;
+                    const int gap = note[i] - note[i - 1];
+                    if (gap < kMudMinInterval) {
+                        mud += static_cast<float>(kMudMinInterval - gap) * 1.5f;
+                    }
+                }
+            }
+
             const float score = leadWeight * lead
                               + centreWeight * std::fabs(centre - styleTarget)
                               + 1.2f * static_cast<float>(folds)
                               + 2.0f * static_cast<float>(dupes)
                               + 0.03f * span * smooth
                               + clash
+                              + mud
                               + bias;
 
             if (!haveBest || score < bestScore) {
@@ -627,10 +666,47 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
 
     if (!haveBest || bestCount <= 0) return false;
 
-    out.count = bestCount;
-    for (int i = 0; i < bestCount; ++i) {
-        out.notes[i] = bestNotes[i];
-        out.degrees[i] = bestDegrees[i];
+    int finalNotes[kMaxVoicingNotes];
+    int finalDegrees[kMaxVoicingNotes];
+    int finalCount = bestCount;
+    for (int i = 0; i < finalCount; ++i) {
+        finalNotes[i] = bestNotes[i];
+        finalDegrees[i] = bestDegrees[i];
+    }
+
+    // Bass note: the chord's root, a clear octave under whatever the voicing's
+    // own lowest tone is. maxNotes above already reserved a slot for it, so
+    // this never has to shed anything itself.
+    if (s.addBassNote && finalCount < kMaxVoicingNotes) {
+        constexpr int kBassFloor = 28;   // E1 -- below this the note is its own mud
+        const int base = finalNotes[0] - 12;
+        const int diff = ((base - rootPc) % 12 + 12) % 12;
+        int bassNote = base - diff;   // <= base, same pitch class as the root
+        while (bassNote < kBassFloor) bassNote += 12;
+        while (bassNote < reachLow) bassNote += 12;   // staying in tune wins
+        bassNote = clampi(bassNote, 0, 127);
+
+        bool duplicate = false;
+        for (int i = 0; i < finalCount; ++i) duplicate |= (finalNotes[i] == bassNote);
+        if (!duplicate) {
+            int insertAt = finalCount;
+            for (int i = 0; i < finalCount; ++i) {
+                if (bassNote < finalNotes[i]) { insertAt = i; break; }
+            }
+            for (int i = finalCount; i > insertAt; --i) {
+                finalNotes[i] = finalNotes[i - 1];
+                finalDegrees[i] = finalDegrees[i - 1];
+            }
+            finalNotes[insertAt] = bassNote;
+            finalDegrees[insertAt] = 1;   // root
+            ++finalCount;
+        }
+    }
+
+    out.count = finalCount;
+    for (int i = 0; i < finalCount; ++i) {
+        out.notes[i] = finalNotes[i];
+        out.degrees[i] = finalDegrees[i];
     }
     out.keyCentrePc = keyPc;
     out.minorKey = minor;
@@ -648,8 +724,8 @@ bool Voicer::update(const int* keys, int keyCount, int melodyNote, const Setting
     out.windowLow = lo;
     out.windowHigh = hi;
 
-    prevCount_ = bestCount;
-    for (int i = 0; i < bestCount; ++i) prev_[i] = bestNotes[i];
+    prevCount_ = finalCount;
+    for (int i = 0; i < finalCount; ++i) prev_[i] = finalNotes[i];
     return true;
 }
 

@@ -186,6 +186,15 @@ public:
         addAndMakeVisible(c);
     }
 
+    /** Detaches every row added so far, without destroying the components
+     *  themselves -- for a card whose content is rebuilt (a filtered list,
+     *  say) rather than fixed for the page's lifetime. The caller owns
+     *  actually destroying or reusing whatever it had added. */
+    void clearRows() {
+        for (auto& r : rows_) removeChildComponent(r.component);
+        rows_.clear();
+    }
+
     int preferredHeight() const {
         int h = cardPadding + 18 + rowGap;
         for (const auto& r : rows_) h += r.height + rowGap;

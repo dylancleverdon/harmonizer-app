@@ -118,15 +118,23 @@ before the second finger comes up too. With latch on, a minor key centre
 stays minor through the whole release, down to no keys held at all; the way
 back to major is to release every key and press exactly one, fresh.
 
-The **sustain pedal** (MIDI CC 64) does two things while held, needing
+The **sustain pedal** (MIDI CC 64) does three things while held, needing
 nothing else switched on: it stands in for latch, so the key centre survives
-your hand coming off the keys entirely, and it freezes the chord itself —
+your hand coming off the keys entirely; it freezes the chord itself —
 whatever was last triggered holds out even if you move to a different note
-on your horn. To pick up a new chord, release the pedal and press it again;
-merely holding it captures nothing new. Pitch tracking keeps running
-underneath while the pedal is down, so the moment it comes back up, the
-chord already matches whatever you are currently playing rather than
-waiting out another stability window.
+on your horn; and it keeps the chord actually *sounding* through a quiet
+passage rather than fading out with your input, the way a piano's sustain
+pedal lets a note ring after you have let go of the key. That last part
+matters because every voice this plugin produces is really a retuned copy
+of whatever your input sounds like right now — with nothing coming in,
+there is normally nothing to copy, pedal or not. While the pedal is down
+and the input drops out, the engine keeps reusing the last real analysis of
+your sound instead of a near-silent one, so the chord rings on rather than
+dying with the input. To pick up a new chord, release the pedal and press
+it again; merely holding it captures nothing new. Pitch tracking keeps
+running underneath while the pedal is down, so the moment it comes back
+up, the chord already matches whatever you are currently playing rather
+than waiting out another stability window.
 
 ### Chord tones
 
@@ -167,6 +175,14 @@ extensions are switched on — rather than a number picked ahead of time.
   alongside a fixed dead zone around whichever note is already locked in — see
   *How it is put together* below — so ordinary vibrato is filtered out even
   at the default setting.
+* **Avoid mud** — a preference against packing two voiced tones a step apart
+  (a second, not a third or wider — those are normal even down low) below a
+  **Mud ceiling** note you set. It nudges the voicer away from that kind of
+  crowding, the same way voice leading or range does; style and range can
+  still outweigh it, so it is not a hard rule about what can sound.
+* **Add bass note** — one extra voice a clear octave under the rest of the
+  chord, always the root, for a walking-bass-style low end underneath
+  whatever the voicing above is doing.
 * **Glide** — chord changes as pitch portamento instead of a retrigger. Each
   voice in the old chord is matched to one in the new chord and slides to
   it over however many milliseconds this is set to, rather than stopping
@@ -245,6 +261,17 @@ got wrong the same way you would edit a hand-built entry, including reaching
 for Record or the note grid directly. It replaces the whole dictionary, so
 save a preset first if the existing one is worth keeping.
 
+Normally a custom voicing's own octave is re-picked every chord, the same
+way the built-in dictionary's is — whichever register leads most smoothly
+from the chord before it and sits nearest the middle of **Range Low**/**Range
+High**. **Lock custom voicing register** turns that off for custom voicings:
+they always land at the one octave nearest the middle of the range instead,
+regardless of what came before, so a voicing built to sit in a specific
+register — a bass note on C3, say — stays there rather than drifting to
+chase the melody or the previous chord. It is still folded back in if that
+register sits further from the played note than the engine can reach — being
+in tune wins over staying put — but that is the only thing that moves it.
+
 Custom dictionaries can be saved as named **presets** under the card below it,
 independent of any particular DAW project -- a dictionary built for one song
 can be loaded into another. They are stored under
@@ -254,6 +281,29 @@ preset. Loading a preset switches the custom dictionary on. A preset saved by
 an older version of this dictionary, back when it picked one of six fixed
 chord types per degree rather than an explicit voicing, still loads -- it is
 converted to the equivalent voicing on the way in.
+
+### Chord library
+
+Above the custom chord dictionary is a **Chord library** card: a curated,
+browsable set of named voicings — rootless shapes, drop 2 and drop 3,
+quartal fourths, shells, upper-structure triads, spread/open voicings,
+gospel and neo-soul moves, altered and blues dominants, and minor ii-V-i
+cadence shapes — for discovering chords to put into your own dictionaries
+rather than building every voicing from scratch. Filter by **Theme** or by
+**Best over** (which chord quality a voicing suits), then for anything in
+the results:
+
+* **Preview** plays it on its own, through a short synthetic tone, so you can
+  hear it without having to sing or play anything into the input.
+* **Load** writes it into whichever degree the custom dictionary editor below
+  is currently pointed at, exactly as if you had clicked the same notes on
+  the keyboard by hand — still fully editable afterwards, and still subject
+  to whatever Range, Voice leading, Lock custom voicing register and the rest
+  are set to, the same as any other custom voicing.
+
+A small chord-name readout sits under the keyboard editor itself, showing
+what you are actually drawing in as you click notes — useful whether you
+started from a library voicing or built one from nothing.
 
 ### How it is put together
 
@@ -301,6 +351,48 @@ is the thin JUCE-facing wrapper: it loads the file with `juce::MidiFile`,
 turns its matched note-on/note-off pairs into the tick-based note list the
 analysis wants, and writes the result into the same parameters the keyboard
 editor does.
+
+Mud avoidance, the bass note and the locked custom register are all part of
+the same placement search in `Voicer::update()` (`JazzVoicer.cpp`), not
+separate passes over the result: mud adds a scoring penalty for adjacent
+voiced tones a second apart below `Settings::mudCeiling`, the bass note is
+appended after the winning voicing is chosen (with one slot reserved from
+`maxNotes` so it never has to shed a tone itself to make room), and the
+locked register skips the usual multi-octave search for a custom voicing
+and places it at the single octave nearest the range's own middle instead.
+None of the three touch the built-in dictionary's own chord-per-degree
+lookup.
+
+The sustain pedal's audio hold is the one piece of this that lives in the
+shared engine rather than the plugin's own jazz layer, since it is the
+engine, not the plugin, that turns "held" notes into sound: every voice in
+`Harmonizer::runHop()` (`app/src/main/cpp/dsp/Harmonizer.{h,cpp}`) is
+rebuilt each hop from that hop's own analysis of the live input, so with
+nothing coming in there is normally nothing to rebuild it from. A new
+`Params::sustainFreeze` flag, set from `PluginProcessor::pushParameters()`
+whenever jazz mode's own sustain pedal is down, lets a hop whose input is
+below a fixed silence threshold skip `Analyzer::analyze()` entirely and
+keep driving the voices from the last real analysis instead — the chord
+rings on unchanged rather than fading with a near-empty spectrum. The
+residual/noise resynthesis is held off for the same stretch, since it is
+breath and mechanical noise rather than part of the chord, and
+resynthesising the same frame of it forever would read as a stuck hiss
+rather than a sustained note.
+
+The chord library is data, not a new engine path: `JazzChordLibrary.{h,cpp}`
+is a `constexpr` table of named voicings in the same
+semitone-offsets-above-a-root shape a `jazz::CustomEntry` already uses, so
+"Load" is exactly the same `setJazzCustomVoicingNote()` call the keyboard
+editor makes. Preview is the one genuinely new piece:
+`HarmonizerAudioProcessor::previewJazzVoicing()` hands the audio thread a
+short list of absolute MIDI notes and a root; on the next block, the
+processor note-ons those notes into the engine in Absolute mode, synthesises
+a plain sine at the root's frequency as the engine's input for about half a
+second (independent of whatever the host is actually feeding it, and with
+jazz mode's own decision loop paused for that stretch so the two never
+fight over the same engine voices), then note-offs them again — the same
+mechanism that turns a held key into a chord in ordinary play, just fed a
+tone the plugin made up rather than one you played.
 
 Latch and sustain live entirely in `PluginProcessor`'s
 `processBlock()`/`jazzUpdate()` -- held keys are read through `collectKeys()`

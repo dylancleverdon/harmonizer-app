@@ -841,6 +841,264 @@ static void testJazzChordHoldTiming() {
           "the extra delay roughly tracks the 245 ms difference in hold time");
 }
 
+// The sustain pedal freezes the *chord decision* (see testJazzSustain above),
+// but every voice is really a retuned copy of the live input's spectrum, so
+// that alone would not stop the actual audio from fading out the instant the
+// player goes quiet. This checks the engine-level freeze in
+// Harmonizer::runHop() that keeps resynthesising the last real analysis
+// instead of a near-silent one while the pedal is held.
+static void testJazzSustainFreeze() {
+    std::printf("\n-- Jazz sustain pedal holds the audio out --\n");
+    const double sr = 48000.0;
+
+    // Plays a tone (or silence, if f0 <= 0) for `seconds`, feeding `event` on
+    // the first block if given, and returns the peak of the last 100 ms of
+    // output -- long enough after any transient to show what is actually
+    // ringing on, not a decay tail from what just stopped.
+    const auto run = [&](bool sustainHeld) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        juce::AudioBuffer<float> buffer(1, 256);
+        float lastWindowPeak = 0.0f;
+
+        const auto renderSeconds = [&](double f0, double seconds, const juce::MidiMessage* first) {
+            const int total = static_cast<int>(sr * seconds);
+            std::vector<float> source(static_cast<size_t>(total));
+            if (f0 > 0.0) makeVoice(source, f0, sr);   // else stays zeroed: silence
+            bool sent = false;
+            const int windowStart = total - static_cast<int>(sr * 0.1);
+            for (int pos = 0; pos < total; pos += 256) {
+                const int n = juce::jmin(256, total - pos);
+                buffer.setSize(1, n, false, false, true);
+                juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+                juce::MidiBuffer midi;
+                if (!sent && first != nullptr) { midi.addEvent(*first, 0); sent = true; }
+                p.processBlock(buffer, midi);
+                if (pos + n > windowStart) {
+                    for (int i = juce::jmax(0, windowStart - pos); i < n; ++i) {
+                        lastWindowPeak = juce::jmax(lastWindowPeak, std::fabs(buffer.getSample(0, i)));
+                    }
+                }
+            }
+        };
+
+        auto keyOn = juce::MidiMessage::noteOn(1, 60, 0.8f);
+        renderSeconds(261.63, 0.6, &keyOn);   // hold C, play C4 -- let the chord settle
+        if (!p.jazzView().sounding) return -1.0f;   // setup failed; let the check below say so
+
+        if (sustainHeld) {
+            auto sustainDown = juce::MidiMessage::controllerEvent(1, 64, 127);
+            renderSeconds(261.63, 0.05, &sustainDown);
+        }
+        lastWindowPeak = 0.0f;   // only the final silent stretch counts from here
+        renderSeconds(-1.0, 1.0, nullptr);   // go quiet
+        return lastWindowPeak;
+    };
+
+    const float held = run(true);
+    const float notHeld = run(false);
+    check(held >= 0.0f && notHeld >= 0.0f, "the chord settles before either run goes quiet");
+    check(notHeld < 0.01f,
+          juce::String("without the pedal, the chord fades out with the input (peak ") +
+              juce::String(notHeld, 4) + ")");
+    check(held > notHeld * 3.0f && held > 0.01f,
+          juce::String("with the pedal down, the chord is still audibly ringing a second into "
+                       "silence (held peak ") +
+              juce::String(held, 4) + " vs not held " + juce::String(notHeld, 4) + ")");
+}
+
+// These three exercise jazz::Voicer directly rather than through the full
+// plugin -- there is no audio or MIDI timing involved in any of them, just
+// integer chord math, so going straight at the voicer is both more precise
+// and much faster than rendering audio to get the same answer.
+
+static void testJazzBassNote() {
+    std::printf("\n-- Bass note --\n");
+
+    jazz::Settings s;
+    s.rangeLow = 48;
+    s.rangeHigh = 72;   // C3-C5
+
+    jazz::Voicer voicer;
+    const int keys[1] = {60};   // C major key centre
+    const int melodyNote = 60;  // played the root -- Imaj7
+
+    jazz::Voicing without;
+    check(voicer.update(keys, 1, melodyNote, s, without), "the chord voices without a bass note");
+
+    s.addBassNote = true;
+    voicer.reset();
+    jazz::Voicing with;
+    check(voicer.update(keys, 1, melodyNote, s, with), "the chord voices with a bass note added");
+
+    check(with.count == without.count + 1,
+          juce::String("adding a bass note adds exactly one voice (") + juce::String(without.count) +
+              " -> " + juce::String(with.count) + ")");
+
+    const int bass = with.notes[0];
+    bool restMatches = with.count - 1 == without.count;
+    for (int i = 1; i < with.count && restMatches; ++i) restMatches &= with.notes[i] == without.notes[i - 1];
+    check(restMatches, "the bass note is the new lowest voice; the rest of the chord is unchanged");
+
+    check(bass % 12 == ((without.chordRootPc % 12) + 12) % 12,
+          "the bass note is the chord's root, same pitch class as the chord root");
+    check(bass <= without.notes[0] - 12,
+          juce::String("the bass note sits a clear octave under the rest of the chord (") +
+              juce::String(bass) + " vs " + juce::String(without.notes[0]) + ")");
+}
+
+static void testJazzMudAvoidance() {
+    std::printf("\n-- Mud avoidance --\n");
+
+    // A chord with an 11th, folded into a narrow, low range: the 11th
+    // naturally wants to land a step away from a tone below it once
+    // everything is squeezed into one tight, low register.
+    jazz::Settings s;
+    s.eleventh = true;
+    s.rangeLow = 36;
+    s.rangeHigh = 48;
+    s.mudCeiling = 48;   // the whole window counts, for this check
+
+    const auto minGapBelowCeiling = [](const jazz::Voicing& v, int ceiling) {
+        int best = 128;
+        for (int i = 1; i < v.count; ++i) {
+            if (v.notes[i] >= ceiling) continue;
+            best = juce::jmin(best, v.notes[i] - v.notes[i - 1]);
+        }
+        return best;
+    };
+
+    const int keys[1] = {60};
+    jazz::Voicer voicer;
+    jazz::Voicing off;
+    check(voicer.update(keys, 1, 60, s, off), "the chord voices with mud avoidance off");
+    const int gapOff = minGapBelowCeiling(off, s.mudCeiling);
+
+    s.avoidMud = true;
+    voicer.reset();
+    jazz::Voicing on;
+    check(voicer.update(keys, 1, 60, s, on), "the chord voices with mud avoidance on");
+    const int gapOn = minGapBelowCeiling(on, s.mudCeiling);
+
+    check(gapOff <= 1,
+          juce::String("without it, this chord actually does pack two tones a step apart (gap ") +
+              juce::String(gapOff) + ")");
+    check(gapOn > gapOff,
+          juce::String("with it on, the tightest gap widens instead (off ") + juce::String(gapOff) +
+              " -> on " + juce::String(gapOn) + ")");
+}
+
+static void testJazzLockedCustomRegister() {
+    std::printf("\n-- Locked custom voicing register --\n");
+
+    // A custom root-degree voicing spanning a couple of octaves, the same
+    // shape the README's own example uses: a bass note under the root, plus
+    // a third and a fifth above it.
+    jazz::CustomEntry entry;
+    entry.offsets[0] = -24;
+    entry.offsets[1] = 0;
+    entry.offsets[2] = 4;
+    entry.offsets[3] = 7;
+    entry.count = 4;
+
+    jazz::Settings s;
+    s.rangeLow = 48;
+    s.rangeHigh = 72;   // target register: the octave around C3-C5's middle, 60
+    s.smoothness = 1.0f;   // lean as hard as possible into voice leading
+    s.useCustomDictionary = true;
+    s.customDict.useMajor = true;
+    s.customDict.major[0] = entry;
+
+    const int keys[1] = {60};
+
+    // Voice a chord far up in a different register first, purely to give
+    // voice leading something distant to pull the next chord toward.
+    const auto seedFarAway = [&](jazz::Voicer& voicer) {
+        jazz::Voicing distant;
+        voicer.update(keys, 1, 91, s, distant);   // G6 -- the seventh, two octaves up
+    };
+
+    jazz::Voicer voicer;
+    seedFarAway(voicer);
+    jazz::Voicing unlocked;
+    check(voicer.update(keys, 1, 60, s, unlocked),
+          "the custom root voicing settles, unlocked, after a distant previous chord");
+
+    s.customVoicingFixedRegister = true;
+    jazz::Voicer voicer2;
+    seedFarAway(voicer2);
+    jazz::Voicing locked;
+    check(voicer2.update(keys, 1, 60, s, locked),
+          "the same voicing settles, locked, after the same distant previous chord");
+
+    // Locked always lands at the one octave nearest the range's own middle,
+    // regardless of what came before -- so its root sits close to 60
+    // (rangeLow/rangeHigh's midpoint) every time.
+    const int lockedRoot = locked.notes[1];   // offset 0 is the second-lowest slot (bass is offset -24)
+    check(std::abs(lockedRoot - 60) <= 6,
+          juce::String("locked, the root lands near the range's own middle regardless of lead-in "
+                       "(root ") +
+              juce::String(lockedRoot) + ")");
+
+    const int unlockedRoot = unlocked.notes[1];
+    check(unlockedRoot != lockedRoot,
+          juce::String("unlocked, a strongly weighted previous chord actually pulls the register "
+                       "somewhere else (unlocked root ") +
+              juce::String(unlockedRoot) + " vs locked " + juce::String(lockedRoot) + ")");
+}
+
+// The chord library's "preview" button has nothing to harmonise unless the
+// plugin feeds the engine something itself -- checks previewJazzVoicing()'s
+// synthetic tone actually produces audible output, on its own, with no host
+// MIDI or audio input at all, and that it stops again on its own.
+static void testJazzLibraryPreview() {
+    std::printf("\n-- Chord library preview --\n");
+    const double sr = 48000.0;
+
+    HarmonizerAudioProcessor p;
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+    // Jazz mode deliberately left off, and wetDry left at its default --
+    // previewJazzVoicing() is documented to depend on neither.
+
+    juce::Array<int> notes{64, 67, 71};   // a triad, arbitrary
+    p.previewJazzVoicing(notes, 60);
+
+    juce::AudioBuffer<float> buffer(1, 256);
+    juce::MidiBuffer noMidi;
+    float duringPeak = 0.0f;
+    const int duringBlocks = static_cast<int>(sr * 0.3) / 256;   // well inside the ~0.6s preview
+    for (int i = 0; i < duringBlocks; ++i) {
+        buffer.clear();
+        p.processBlock(buffer, noMidi);
+        duringPeak = juce::jmax(duringPeak, buffer.getMagnitude(0, 0, buffer.getNumSamples()));
+    }
+    check(duringPeak > 0.01f,
+          juce::String("the preview is audible with no host input at all (peak ") +
+              juce::String(duringPeak, 4) + ")");
+
+    // Render well past the end of the ~0.6s preview (0.3s already elapsed
+    // above), then only look at the last 100 ms -- the stretch in between is
+    // legitimately still the tail end of the same preview sounding.
+    float afterPeak = 0.0f;
+    const int afterBlocks = static_cast<int>(sr * 1.0) / 256;
+    const int lastWindowBlocks = static_cast<int>(sr * 0.1) / 256;
+    for (int i = 0; i < afterBlocks; ++i) {
+        buffer.clear();
+        p.processBlock(buffer, noMidi);
+        if (i >= afterBlocks - lastWindowBlocks) {
+            afterPeak = juce::jmax(afterPeak, buffer.getMagnitude(0, 0, buffer.getNumSamples()));
+        }
+    }
+    check(afterPeak < 0.01f,
+          juce::String("and stops again on its own once the preview window ends (peak ") +
+              juce::String(afterPeak, 4) + ")");
+}
+
 // Auto harmony voices ignores the Chord Voices slider entirely and lets
 // through exactly as many notes as the chord naturally has -- extensions
 // included -- rather than the number picked ahead of time.
@@ -1244,6 +1502,11 @@ int main() {
     testJazzGlide();
     testJazzChordStability();
     testJazzChordHoldTiming();
+    testJazzSustainFreeze();
+    testJazzBassNote();
+    testJazzMudAvoidance();
+    testJazzLockedCustomRegister();
+    testJazzLibraryPreview();
     testJazzAutoVoices();
     testJazzCustomDictionary();
 

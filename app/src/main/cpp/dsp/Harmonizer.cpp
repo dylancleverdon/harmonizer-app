@@ -9,6 +9,11 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kInHistLen = 8192;          // power of two, >= maxFft + one block
 
+// Below this peak, a hop's analysis window is treated as "nothing playing"
+// for sustain-freeze purposes -- about -40 dBFS, well under any real note but
+// comfortably above noise floor and quantisation dither.
+constexpr float kFreezeSilencePeak = 0.01f;
+
 int log2i(int v) { int r = 0; while ((1 << r) < v) ++r; return r; }
 
 inline float clampf(float v, float lo, float hi) {
@@ -462,7 +467,26 @@ void Harmonizer::runHop() {
     // and the point of that setting is to be cheap.
     const bool wantResidual = partialsPerVoice_ >= 8;
 
-    analyzer_.analyze(frameBuf_.data(), formant, absolute, partialsPerVoice_, wantResidual);
+    // Sustain hold: every voice is a retuned copy of whatever this hop's
+    // analysis says the input looks like, so with nothing playing there is
+    // nothing to copy -- a "held" note still fades out on its own. While the
+    // caller wants a hold in effect and this hop's window is essentially
+    // silent, skip re-analysing it and let the last real analysis keep
+    // driving updateVoiceRatios() and the voices below unchanged, instead of
+    // handing them a near-empty spectrum. A held note or freshly played one
+    // makes the next hop's peak clear the threshold immediately, so this
+    // never delays an actual note change -- only what happens once the
+    // player has genuinely gone quiet.
+    float peak = 0.0f;
+    for (int n = 0; n < fft_; ++n) {
+        peak = std::max(peak, std::fabs(frameBuf_[static_cast<size_t>(n)]));
+    }
+    const bool freeze =
+        params_.sustainFreeze.load(std::memory_order_relaxed) && peak < kFreezeSilencePeak;
+
+    if (!freeze) {
+        analyzer_.analyze(frameBuf_.data(), formant, absolute, partialsPerVoice_, wantResidual);
+    }
     updateVoiceRatios();
 
     int activeVoices = 0;
@@ -491,8 +515,11 @@ void Harmonizer::runHop() {
 
     // One residual pass for the whole chord, not one per voice: unvoiced sound
     // has no pitch to shift, so a single copy at the harmony's level is both
-    // correct and constant-cost as voices are added.
-    if (wantResidual && activeVoices > 0) {
+    // correct and constant-cost as voices are added. Held off while frozen --
+    // it is breath/noise energy from the player, not part of the chord, and
+    // resynthesising the same frame of it forever sounds like a stuck hiss
+    // rather than a sustained note.
+    if (wantResidual && activeVoices > 0 && !freeze) {
         synthesiseResidual(std::sqrt(gainSqSum) * voiceScale);
     }
 
