@@ -56,6 +56,13 @@ struct LibraryVoicing {
     LibraryQuality quality;
     int offsets[kMaxVoicingNotes];
     int count;
+
+    // Where this voicing was actually pulled from, for a chord that names
+    // one -- nullptr (the default every existing entry gets for free
+    // through aggregate initialization) for a generic theory shape like a
+    // rootless voicing or a drop-2 shell that isn't tied to one recording.
+    const char* artist = nullptr;   // "Miles Davis"
+    const char* song = nullptr;     // "So What (1959)"
 };
 
 int libraryVoicingCount();

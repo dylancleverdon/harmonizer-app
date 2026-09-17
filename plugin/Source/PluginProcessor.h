@@ -3,7 +3,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "Harmonizer.h"
+#include "JazzChordLibrary.h"
 #include "JazzDictionaryFactoryPresets.h"
+#include "JazzMidiImport.h"
 #include "JazzVoicer.h"
 
 /**
@@ -254,6 +256,26 @@ public:
     bool loadJazzFactoryDictionaryPreset(int index);
 
     /**
+     * One chord a player has chosen to keep, credited to whoever it came
+     * from -- the personal counterpart to JazzChordLibrary's built-in table,
+     * stored the same way a dictionary preset is (one small file per entry,
+     * independent of any DAW project) rather than compiled in. Shown in the
+     * Jazz page's own "Your library" section, filtered the same way the
+     * built-in one is. Message thread only, like the preset methods above.
+     */
+    struct UserLibraryEntry {
+        juce::String name, description, artist, song;
+        jazz::LibraryTheme theme = jazz::LibraryTheme::Rootless;
+        jazz::LibraryQuality quality = jazz::LibraryQuality::Any;
+        int offsets[jazz::kMaxVoicingNotes] = {};
+        int count = 0;
+    };
+    static juce::File jazzUserLibraryDirectory();
+    juce::Array<UserLibraryEntry> jazzUserLibraryEntries() const;
+    bool saveJazzUserLibraryEntry(const UserLibraryEntry& entry) const;
+    bool deleteJazzUserLibraryEntry(const juce::String& name) const;
+
+    /**
      * Custom voicing editing, for the keyboard editor in the Jazz page. All
      * message thread only, like every other editor-to-processor parameter
      * write -- the audio thread only ever reads the settled result through
@@ -299,14 +321,49 @@ public:
     };
 
     /**
-     * Finds the key centre(s) and chords in a .mid file and replaces the
-     * whole custom dictionary with what it found -- the same result running
-     * the keyboard editor by hand would give, for as much of the twelve
-     * degrees (each context) as the file gave evidence for. A degree the
-     * file never touched is left blank, falling back to the built-in
-     * dictionary the same way an unfilled hand-built entry does.
+     * Finds the key centre(s) and chords in a .mid file -- the same
+     * analysis the keyboard editor's twelve degrees would show if you'd
+     * played the same performance by hand. Analysis only: nothing here
+     * touches the live custom dictionary. The result is held as the
+     * "pending" MIDI import (jazzPendingMidiImport_) until you explicitly
+     * do something with it -- useJazzPendingMidiImport() to apply the whole
+     * dictionary, saveJazzPendingMidiImportAsPreset() to file it away
+     * instead, or saveJazzMidiCandidateToLibrary() to keep just one chord
+     * out of it -- so running the analysis can never overwrite a dictionary
+     * you're still working on.
      */
     MidiImportSummary importJazzCustomDictionaryFromMidiFile(const juce::File& file);
+
+    /** Applies the last analyzed MIDI file's whole dictionary to the live
+     *  custom dictionary and switches it on -- what import used to do
+     *  immediately. False if there is no pending analysis. */
+    bool useJazzPendingMidiImport();
+
+    /** Files the last analyzed MIDI file's whole dictionary away as a named
+     *  preset, the same as saveJazzDictionaryPreset() but sourced from the
+     *  pending analysis instead of whatever the live dictionary currently
+     *  holds. False if there is no pending analysis. */
+    bool saveJazzPendingMidiImportAsPreset(const juce::String& name) const;
+
+    /**
+     * Every distinct voicing the last analysis actually found, most-played
+     * first -- one chord at a time, for picking a single signature moment
+     * out of a performance rather than taking the whole dictionary.
+     */
+    int jazzPendingMidiImportCandidateCount() const;
+    jazz::ImportCandidate jazzPendingMidiImportCandidate(int index) const;
+
+    /** Auditions one candidate the same way previewJazzVoicing() auditions a
+     *  chord library entry -- see that method. */
+    void previewJazzMidiCandidate(int index);
+
+    /** Saves one candidate into the personal library (see UserLibraryEntry)
+     *  under the given credit. False for an out-of-range index or a blank
+     *  artist -- attribution is required for anything added to the browser
+     *  from a MIDI file, the same as anything added by hand. */
+    bool saveJazzMidiCandidateToLibrary(int index, const juce::String& name,
+                                        const juce::String& artist, const juce::String& song,
+                                        jazz::LibraryTheme theme, jazz::LibraryQuality quality);
 
     /** How a custom voicing's semitone offsets are packed into an
      *  AudioParameterInt: 0 means "unused", everything else maps onto
@@ -404,6 +461,18 @@ private:
     std::atomic<bool> jazzRecordActive_{false};
     std::atomic<int> jazzRecordNotes_[jazz::kMaxVoicingNotes];
     void addJazzCustomRecordedNote(int note);
+
+    // The most recent MIDI file analysis, held until explicitly applied,
+    // saved as a preset, or mined for a single candidate -- see
+    // importJazzCustomDictionaryFromMidiFile() and the methods around it.
+    // Message thread only, like everything else about the custom dictionary
+    // editor.
+    jazz::ImportResult jazzPendingMidiImport_;
+
+    /** Shared by saveJazzDictionaryPreset() (from the live params) and
+     *  saveJazzPendingMidiImportAsPreset() (from a MIDI analysis) -- the
+     *  actual XML-writing both funnel into. */
+    bool writeDictionaryPreset(const juce::String& name, const jazz::CustomDictionary& dict) const;
 
     // --- chord library preview ---------------------------------------------
     // Cross-thread handoff for previewJazzVoicing(): the message thread

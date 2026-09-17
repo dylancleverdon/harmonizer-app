@@ -71,6 +71,34 @@ void styleSlider(juce::Slider& s) {
     s.setColour(juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
 }
 
+/** "R b3 b7 9" -- the generic upper-structure spelling of a raw offset
+ *  array, the same way a custom voicing's tones are named on the keyboard
+ *  editor and in the chord library results. */
+juce::String spellOffsets(const int* offsets, int count) {
+    juce::String s;
+    for (int i = 0; i < count; ++i) {
+        s += (s.isEmpty() ? "" : " ") +
+             juce::String(jazz::intervalName(((offsets[i] % 12) + 12) % 12));
+    }
+    return s;
+}
+
+/** "Miles Davis -- So What (1959)", or empty when a voicing carries no
+ *  attribution -- a generic theory shape (rootless, drop 2, a shell) rather
+ *  than one pulled from a specific recording. */
+juce::String libraryCredit(const char* artist, const char* song) {
+    const juce::String a(artist == nullptr ? "" : artist);
+    if (a.isEmpty()) return {};
+    const juce::String s(song == nullptr ? "" : song);
+    return s.isEmpty() ? a : a + "  --  " + s;
+}
+
+/** Same idea, for a personal library entry's juce::String fields. */
+juce::String libraryCredit(const juce::String& artist, const juce::String& song) {
+    if (artist.isEmpty()) return {};
+    return song.isEmpty() ? artist : artist + "  --  " + song;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -644,7 +672,7 @@ public:
                 b->setClickingTogglesState(false);
                 b->onClick = [this, filter, value] {
                     *filter = value;
-                    rebuildLibraryResults();
+                    refreshLibrarySections();
                 };
                 grid.add(*b);
             };
@@ -668,7 +696,7 @@ public:
                 b->setClickingTogglesState(false);
                 b->onClick = [this, filter, value] {
                     *filter = value;
-                    rebuildLibraryResults();
+                    refreshLibrarySections();
                 };
                 grid.add(*b);
             };
@@ -682,8 +710,187 @@ public:
         }
         libraryCard.addRow(libraryQualityGrid_, libraryQualityGrid_.preferredHeight());
 
+        libraryArtistLabel_.setText("ARTIST OR SONG", look::muted);
+        libraryCard.addRow(libraryArtistLabel_, 14);
+        libraryArtistFilterEditor_.setTextToShowWhenEmpty("Filter by who it's credited to...",
+                                                           look::muted);
+        libraryArtistFilterEditor_.setColour(juce::TextEditor::backgroundColourId,
+                                             look::surfaceVariant);
+        libraryArtistFilterEditor_.setColour(juce::TextEditor::textColourId, look::text);
+        libraryArtistFilterEditor_.setColour(juce::TextEditor::outlineColourId,
+                                             juce::Colours::transparentBlack);
+        libraryArtistFilterEditor_.onTextChange = [this] { refreshLibrarySections(); };
+        libraryCard.addRow(libraryArtistFilterEditor_, 28);
+
         libraryResultsCard_ = &addCard("Chord library results");
-        rebuildLibraryResults();
+
+        // --- Your library: chords a player has chosen to keep, credited to
+        // whoever they came from -- pulled from a MIDI file below, or saved
+        // by hand from the custom dictionary editor further down. Same
+        // filters as the curated results above; separate card so curated
+        // and self-found chords never blur together.
+        userLibraryCard_ = &addCard("Your library");
+        refreshLibrarySections();
+
+        // --- Import chords from MIDI: analyse a real performance instead of
+        // building the table by hand -- a third way, alongside the curated
+        // library above and hand-drawing below, to get chords into your
+        // custom dictionary and Your library. Analysis only: nothing here
+        // touches your working dictionary until you explicitly use it or
+        // save it, and picking a single chord out of it never has.
+        auto& midiCard = addCard("Import chords from MIDI");
+        midiImportNote_.setText(
+            "Feeds a MIDI performance through the same key-and-chord analysis the keyboard "
+            "editor below would show if you had played it by hand. Finds the key centre (or "
+            "centres, if it modulates) and every chord that actually recurs at each scale "
+            "degree. It's a heuristic, not a transcription -- check what it found below before "
+            "committing to any of it.");
+        midiCard.addRow(midiImportNote_, 72);
+        midiImportButton_.setButtonText("Choose a MIDI file...");
+        styleSmallButton(midiImportButton_);
+        midiCard.addRow(midiImportButton_, 28);
+        midiImportStatus_.setText("");
+        midiCard.addRow(midiImportStatus_, 44);
+
+        midiWholeDictLabel_.setText("BUILD A WHOLE DICTIONARY FROM IT", look::muted);
+        midiCard.addRow(midiWholeDictLabel_, 14);
+        midiUseNowButton_.setButtonText("Use it now");
+        styleSmallButton(midiUseNowButton_);
+        midiCard.addRow(midiUseNowButton_, 28);
+
+        midiPresetNameEditor_.setTextToShowWhenEmpty("Preset name", look::muted);
+        midiPresetNameEditor_.setColour(juce::TextEditor::backgroundColourId, look::surfaceVariant);
+        midiPresetNameEditor_.setColour(juce::TextEditor::textColourId, look::text);
+        midiPresetNameEditor_.setColour(juce::TextEditor::outlineColourId,
+                                        juce::Colours::transparentBlack);
+        midiSaveAsPresetButton_.setButtonText("Save as preset");
+        styleSmallButton(midiSaveAsPresetButton_);
+        midiSaveAsPresetRow_.addAndMakeVisible(midiPresetNameEditor_);
+        midiSaveAsPresetRow_.addAndMakeVisible(midiSaveAsPresetButton_);
+        midiSaveAsPresetRow_.onResize = [this] {
+            midiSaveAsPresetButton_.setBounds(midiSaveAsPresetRow_.getWidth() - 120, 0, 120,
+                                              midiSaveAsPresetRow_.getHeight());
+            midiPresetNameEditor_.setBounds(0, 0, midiSaveAsPresetRow_.getWidth() - 128,
+                                            midiSaveAsPresetRow_.getHeight());
+        };
+        midiCard.addRow(midiSaveAsPresetRow_, 28);
+        midiWholeDictStatus_.setText("");
+        midiCard.addRow(midiWholeDictStatus_, 24);
+
+        midiImportButton_.onClick = [this] {
+            midiChooser_ = std::make_unique<juce::FileChooser>("Choose a MIDI file", juce::File(),
+                                                               "*.mid;*.midi");
+            const auto flags = juce::FileBrowserComponent::openMode |
+                               juce::FileBrowserComponent::canSelectFiles;
+            midiChooser_->launchAsync(flags, [this](const juce::FileChooser& chooser) {
+                const auto file = chooser.getResult();
+                if (!file.existsAsFile()) return;
+
+                const auto summary = processor_.importJazzCustomDictionaryFromMidiFile(file);
+                if (summary.ok) {
+                    midiImportStatus_.setText(
+                        "Found " + juce::String(summary.keySegments) + " key centre" +
+                            (summary.keySegments == 1 ? "" : "s") + ", " +
+                            juce::String(summary.degreesFilled) + " of 24 degrees, from " +
+                            juce::String(summary.chordsAnalyzed) + " sampled chords. Pick what "
+                            "to do with it below, or take one chord at a time in the card "
+                            "underneath.",
+                        look::accent);
+                } else {
+                    midiImportStatus_.setText(summary.error, look::warn);
+                }
+                midiWholeDictStatus_.setText("");
+                rebuildMidiCandidates();
+            });
+        };
+
+        midiUseNowButton_.onClick = [this] {
+            if (processor_.useJazzPendingMidiImport()) {
+                midiWholeDictStatus_.setText("Applied to your working dictionary.", look::accent);
+                setEditContext(false);
+                setEditDegree(0);
+            } else {
+                midiWholeDictStatus_.setText("Analyse a MIDI file first.", look::warn);
+            }
+        };
+        midiSaveAsPresetButton_.onClick = [this] {
+            const auto name = midiPresetNameEditor_.getText().trim();
+            if (name.isEmpty()) {
+                midiWholeDictStatus_.setText("Type a name first.", look::warn);
+                return;
+            }
+            if (processor_.saveJazzPendingMidiImportAsPreset(name)) {
+                midiWholeDictStatus_.setText("Saved as \"" + name + "\".", look::accent);
+                midiPresetNameEditor_.clear();
+                refreshPresetList();
+            } else {
+                midiWholeDictStatus_.setText("Analyse a MIDI file first.", look::warn);
+            }
+        };
+
+        // --- Chords found in that file: one at a time, instead of the whole
+        // dictionary above -- browse, preview, load straight into whichever
+        // degree is selected below, or keep one permanently with a credit
+        // using the card underneath this one.
+        midiCandidatesCard_ = &addCard("Chords found in that file");
+        rebuildMidiCandidates();
+
+        // --- Save a chord found above to Your library: separate, static
+        // card so the candidate list above can be freely rebuilt without
+        // disturbing whatever is mid-edit here.
+        auto& midiSaveCard = addCard("Save a chord to your library");
+        midiSaveSelectionNote_.setText("Pick \"Save...\" on a chord above first.", look::muted);
+        midiSaveCard.addRow(midiSaveSelectionNote_, 30);
+        midiSaveNameEditor_.setTextToShowWhenEmpty("Name", look::muted);
+        midiSaveArtistEditor_.setTextToShowWhenEmpty("Artist (required)", look::muted);
+        midiSaveSongEditor_.setTextToShowWhenEmpty("Song", look::muted);
+        for (auto* e : {&midiSaveNameEditor_, &midiSaveArtistEditor_, &midiSaveSongEditor_}) {
+            e->setColour(juce::TextEditor::backgroundColourId, look::surfaceVariant);
+            e->setColour(juce::TextEditor::textColourId, look::text);
+            e->setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+            midiSaveCard.addRow(*e, 28);
+        }
+        populateLibraryPickerCombos(midiSaveThemeCombo_, midiSaveQualityCombo_);
+        styleCombo(midiSaveThemeCombo_);
+        styleCombo(midiSaveQualityCombo_);
+        midiSaveComboGrid_.add(midiSaveThemeCombo_);
+        midiSaveComboGrid_.add(midiSaveQualityCombo_);
+        midiSaveCard.addRow(midiSaveComboGrid_, midiSaveComboGrid_.preferredHeight());
+        midiSaveButton_.setButtonText("Save to Your library");
+        styleSmallButton(midiSaveButton_);
+        midiSaveCard.addRow(midiSaveButton_, 28);
+        midiSaveStatus_.setText("");
+        midiSaveCard.addRow(midiSaveStatus_, 24);
+
+        midiSaveButton_.onClick = [this] {
+            if (midiSaveCandidateIndex_ < 0) {
+                midiSaveStatus_.setText("Pick a chord above first.", look::warn);
+                return;
+            }
+            const auto name = midiSaveNameEditor_.getText().trim();
+            const auto artist = midiSaveArtistEditor_.getText().trim();
+            if (name.isEmpty() || artist.isEmpty()) {
+                midiSaveStatus_.setText("Name and artist are both required.", look::warn);
+                return;
+            }
+            const auto theme = static_cast<jazz::LibraryTheme>(midiSaveThemeCombo_.getSelectedItemIndex());
+            const auto quality =
+                static_cast<jazz::LibraryQuality>(midiSaveQualityCombo_.getSelectedItemIndex());
+            if (processor_.saveJazzMidiCandidateToLibrary(
+                    midiSaveCandidateIndex_, name, artist, midiSaveSongEditor_.getText().trim(),
+                    theme, quality)) {
+                midiSaveStatus_.setText("Saved \"" + name + "\" to Your library.", look::accent);
+                midiSaveNameEditor_.clear();
+                midiSaveArtistEditor_.clear();
+                midiSaveSongEditor_.clear();
+                midiSaveCandidateIndex_ = -1;
+                midiSaveSelectionNote_.setText("Pick \"Save...\" on a chord above first.", look::muted);
+                refreshLibrarySections();
+            } else {
+                midiSaveStatus_.setText("Could not save that -- check the name and artist.",
+                                        look::warn);
+            }
+        };
 
         // --- Custom chord dictionary: a user-built alternative to the one
         // above. It replaces which chord is picked for a degree, nothing else
@@ -786,6 +993,65 @@ public:
                                            customVoicingRow_.getHeight());
         };
         customCard.addRow(customVoicingRow_, 26);
+
+        // --- Save this voicing to Your library: keeps just the currently
+        // selected degree's chord, with a credit -- the hand-drawn
+        // counterpart to saving a chord pulled from a MIDI file below.
+        customSaveLabel_.setText("SAVE THIS VOICING TO YOUR LIBRARY", look::muted);
+        customCard.addRow(customSaveLabel_, 14);
+        customSaveNameEditor_.setTextToShowWhenEmpty("Name", look::muted);
+        customSaveArtistEditor_.setTextToShowWhenEmpty("Artist (required)", look::muted);
+        customSaveSongEditor_.setTextToShowWhenEmpty("Song", look::muted);
+        for (auto* e : {&customSaveNameEditor_, &customSaveArtistEditor_, &customSaveSongEditor_}) {
+            e->setColour(juce::TextEditor::backgroundColourId, look::surfaceVariant);
+            e->setColour(juce::TextEditor::textColourId, look::text);
+            e->setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+            customCard.addRow(*e, 28);
+        }
+        populateLibraryPickerCombos(customSaveThemeCombo_, customSaveQualityCombo_);
+        styleCombo(customSaveThemeCombo_);
+        styleCombo(customSaveQualityCombo_);
+        customSaveComboGrid_.add(customSaveThemeCombo_);
+        customSaveComboGrid_.add(customSaveQualityCombo_);
+        customCard.addRow(customSaveComboGrid_, customSaveComboGrid_.preferredHeight());
+        customSaveButton_.setButtonText("Save to Your library");
+        styleSmallButton(customSaveButton_);
+        customCard.addRow(customSaveButton_, 28);
+        customSaveStatus_.setText("");
+        customCard.addRow(customSaveStatus_, 24);
+
+        customSaveButton_.onClick = [this] {
+            const auto entry = processor_.jazzCustomEntry(editMinor_, editDegree_);
+            if (entry.count <= 0) {
+                customSaveStatus_.setText("This degree is blank -- nothing to save.", look::warn);
+                return;
+            }
+            const auto name = customSaveNameEditor_.getText().trim();
+            const auto artist = customSaveArtistEditor_.getText().trim();
+            if (name.isEmpty() || artist.isEmpty()) {
+                customSaveStatus_.setText("Name and artist are both required.", look::warn);
+                return;
+            }
+            HarmonizerAudioProcessor::UserLibraryEntry libEntry;
+            libEntry.name = name;
+            libEntry.artist = artist;
+            libEntry.song = customSaveSongEditor_.getText().trim();
+            libEntry.theme = static_cast<jazz::LibraryTheme>(customSaveThemeCombo_.getSelectedItemIndex());
+            libEntry.quality =
+                static_cast<jazz::LibraryQuality>(customSaveQualityCombo_.getSelectedItemIndex());
+            libEntry.count = entry.count;
+            for (int i = 0; i < entry.count; ++i) libEntry.offsets[i] = entry.offsets[i];
+            if (processor_.saveJazzUserLibraryEntry(libEntry)) {
+                customSaveStatus_.setText("Saved \"" + name + "\" to Your library.", look::accent);
+                customSaveNameEditor_.clear();
+                customSaveArtistEditor_.clear();
+                customSaveSongEditor_.clear();
+                refreshLibrarySections();
+            } else {
+                customSaveStatus_.setText("Could not save that -- check the name and artist.",
+                                          look::warn);
+            }
+        };
 
         // --- Record mode: build the voicing by ear on a real controller
         // instead of clicking the keyboard below. Every note played while it
@@ -933,50 +1199,6 @@ public:
         relabelDegreeButtons();
         setEditContext(false);
         setEditDegree(0);
-
-        // --- Generate from MIDI: analyse a file instead of building the
-        // table by hand.
-        auto& midiCard = addCard("Generate from MIDI");
-        midiImportNote_.setText(
-            "Feeds a MIDI performance through the same key-and-chord analysis, instead of "
-            "building the table above by hand. Finds the key centre (or centres, if it "
-            "modulates) and, within each, what chord was played over which scale degree -- "
-            "filling in as much of the table as the file gives evidence for. A degree it never "
-            "touched stays blank, using the built-in chord the same way an unfilled hand-built "
-            "entry does. This replaces the whole custom dictionary, so save a preset first if you "
-            "want to keep what is there now. It is a heuristic, not a transcription -- check the "
-            "keyboard above afterwards and adjust anything it got wrong.");
-        midiCard.addRow(midiImportNote_, 86);
-        midiImportButton_.setButtonText("Choose a MIDI file...");
-        styleSmallButton(midiImportButton_);
-        midiCard.addRow(midiImportButton_, 28);
-        midiImportStatus_.setText("");
-        midiCard.addRow(midiImportStatus_, 30);
-
-        midiImportButton_.onClick = [this] {
-            midiChooser_ = std::make_unique<juce::FileChooser>("Choose a MIDI file", juce::File(),
-                                                               "*.mid;*.midi");
-            const auto flags = juce::FileBrowserComponent::openMode |
-                               juce::FileBrowserComponent::canSelectFiles;
-            midiChooser_->launchAsync(flags, [this](const juce::FileChooser& chooser) {
-                const auto file = chooser.getResult();
-                if (!file.existsAsFile()) return;
-
-                const auto summary = processor_.importJazzCustomDictionaryFromMidiFile(file);
-                if (summary.ok) {
-                    midiImportStatus_.setText(
-                        "Found " + juce::String(summary.keySegments) + " key centre" +
-                            (summary.keySegments == 1 ? "" : "s") + ", filled " +
-                            juce::String(summary.degreesFilled) + " of 24 degrees from " +
-                            juce::String(summary.chordsAnalyzed) + " sampled chords.",
-                        look::accent);
-                    setEditContext(false);
-                    setEditDegree(0);
-                } else {
-                    midiImportStatus_.setText(summary.error, look::warn);
-                }
-            });
-        };
 
         // --- Factory dictionaries: full starting points built in, one
         // player's or style's whole vocabulary rather than one chord at a
@@ -1352,12 +1574,83 @@ private:
         }
     };
 
-    /** Rebuilds the results card's rows from the library filtered by
-     *  libraryThemeFilter_/libraryQualityFilter_ (-1 means "all"). Called
-     *  once up front and again every time a filter button is clicked. */
+    /** One row of Your library: like LibraryRow, but with a Delete button
+     *  too, since a personal entry -- unlike the curated or factory
+     *  content -- is the player's own to remove. */
+    class UserLibraryRow final : public juce::Component {
+    public:
+        juce::Label nameLabel;
+        look::Note descNote;
+        juce::TextButton previewButton{"Preview"}, loadButton{"Load"}, deleteButton{"Delete"};
+
+        UserLibraryRow() {
+            nameLabel.setColour(juce::Label::textColourId, look::text);
+            nameLabel.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+            addAndMakeVisible(nameLabel);
+            addAndMakeVisible(descNote);
+            for (auto* b : {&previewButton, &loadButton, &deleteButton}) {
+                styleSmallButton(*b);
+                addAndMakeVisible(*b);
+            }
+        }
+
+        void resized() override {
+            constexpr int buttonW = 56, buttonGap = 6;
+            const int buttonsW = buttonW * 3 + buttonGap * 2;
+            nameLabel.setBounds(0, 0, juce::jmax(0, getWidth() - buttonsW - 8), 18);
+            previewButton.setBounds(getWidth() - buttonsW, 0, buttonW, 22);
+            loadButton.setBounds(getWidth() - buttonsW + buttonW + buttonGap, 0, buttonW, 22);
+            deleteButton.setBounds(getWidth() - buttonW, 0, buttonW, 22);
+            descNote.setBounds(0, 20, getWidth(), juce::jmax(0, getHeight() - 20));
+        }
+    };
+
+    /** One chord actually found while analysing a MIDI file: its spelling,
+     *  which scale degree it recurred on, and how often -- single line, no
+     *  description, since there is nothing to say about it yet until it is
+     *  saved. Load writes it straight into whichever degree the editor
+     *  below is pointed at, the same as a chord library entry; Save...
+     *  points the credit form beneath "Chords found in that file" at it. */
+    class MidiCandidateRow final : public juce::Component {
+    public:
+        juce::Label nameLabel;
+        juce::TextButton previewButton{"Preview"}, loadButton{"Load"}, saveButton{"Save..."};
+
+        MidiCandidateRow() {
+            nameLabel.setColour(juce::Label::textColourId, look::text);
+            nameLabel.setFont(juce::FontOptions(13.0f, juce::Font::plain));
+            addAndMakeVisible(nameLabel);
+            for (auto* b : {&previewButton, &loadButton, &saveButton}) {
+                styleSmallButton(*b);
+                addAndMakeVisible(*b);
+            }
+        }
+
+        void resized() override {
+            constexpr int buttonW = 56, buttonGap = 6;
+            const int buttonsW = buttonW * 3 + buttonGap * 2;
+            nameLabel.setBounds(0, 0, juce::jmax(0, getWidth() - buttonsW - 8), getHeight());
+            previewButton.setBounds(getWidth() - buttonsW, 0, buttonW, 22);
+            loadButton.setBounds(getWidth() - buttonsW + buttonW + buttonGap, 0, buttonW, 22);
+            saveButton.setBounds(getWidth() - buttonW, 0, buttonW, 22);
+        }
+    };
+
+    /** Both results sections share the same three filters -- called once up
+     *  front and again every time any filter changes. */
+    void refreshLibrarySections() {
+        rebuildLibraryResults();
+        rebuildUserLibraryResults();
+    }
+
+    /** Rebuilds the curated results card's rows from the built-in library,
+     *  filtered by libraryThemeFilter_/libraryQualityFilter_ (-1 means
+     *  "all") and libraryArtistFilterEditor_'s text (a substring match
+     *  against the credit, empty means "all"). */
     void rebuildLibraryResults() {
         libraryResultsCard_->clearRows();
         libraryRows_.clear();
+        const auto artistQuery = libraryArtistFilterEditor_.getText().trim();
 
         for (int i = 0; i < jazz::libraryVoicingCount(); ++i) {
             const jazz::LibraryVoicing v = jazz::libraryVoicing(i);
@@ -1369,18 +1662,17 @@ private:
                 static_cast<int>(v.quality) != libraryQualityFilter_) {
                 continue;
             }
+            const auto credit = libraryCredit(v.artist, v.song);
+            if (artistQuery.isNotEmpty() && !credit.containsIgnoreCase(artistQuery)) continue;
 
             auto* row = libraryRows_.add(new LibraryRow());
-            juce::String spelling;
-            for (int n = 0; n < v.count; ++n) {
-                spelling += (spelling.isEmpty() ? "" : " ") +
-                            juce::String(jazz::intervalName(((v.offsets[n] % 12) + 12) % 12));
-            }
+            const auto spelling = spellOffsets(v.offsets, v.count);
             row->nameLabel.setText(juce::String(v.name) + "  --  " +
                                        jazz::libraryThemeName(v.theme) + "  (" +
                                        jazz::libraryQualityName(v.quality) + ")  " + spelling,
                                    juce::dontSendNotification);
-            row->descNote.setText(v.description);
+            row->descNote.setText(credit.isNotEmpty() ? credit + "  --  " + v.description
+                                                      : juce::String(v.description));
             row->previewButton.onClick = [this, v] {
                 const int root = previewRootNote();
                 juce::Array<int> notes;
@@ -1401,6 +1693,112 @@ private:
             libraryResultsEmptyNote_.setText("Nothing matches this filter combination.", look::muted);
             libraryResultsCard_->addRow(libraryResultsEmptyNote_, 24);
         }
+    }
+
+    /** Rebuilds "Your library" from the chords a player has saved
+     *  themselves -- same filters as rebuildLibraryResults(), plus a
+     *  Delete button in place of nothing, since (unlike the curated or
+     *  factory content) these are the player's own to remove. */
+    void rebuildUserLibraryResults() {
+        userLibraryCard_->clearRows();
+        userLibraryRows_.clear();
+        const auto artistQuery = libraryArtistFilterEditor_.getText().trim();
+
+        const auto entries = processor_.jazzUserLibraryEntries();
+        for (const auto& e : entries) {
+            if (libraryThemeFilter_ >= 0 && static_cast<int>(e.theme) != libraryThemeFilter_) continue;
+            if (libraryQualityFilter_ >= 0 && static_cast<int>(e.quality) != libraryQualityFilter_) {
+                continue;
+            }
+            const auto credit = libraryCredit(e.artist, e.song);
+            if (artistQuery.isNotEmpty() && !credit.containsIgnoreCase(artistQuery)) continue;
+
+            auto* row = userLibraryRows_.add(new UserLibraryRow());
+            const auto spelling = spellOffsets(e.offsets, e.count);
+            row->nameLabel.setText(e.name + "  --  " + jazz::libraryThemeName(e.theme) + "  (" +
+                                       jazz::libraryQualityName(e.quality) + ")  " + spelling,
+                                   juce::dontSendNotification);
+            row->descNote.setText(e.description.isNotEmpty() ? credit + "  --  " + e.description
+                                                              : credit);
+            row->previewButton.onClick = [this, e] {
+                const int root = previewRootNote();
+                juce::Array<int> notes;
+                for (int n = 0; n < e.count; ++n) notes.add(root + e.offsets[n]);
+                processor_.previewJazzVoicing(notes, root);
+            };
+            row->loadButton.onClick = [this, e] {
+                processor_.clearJazzCustomVoicing(editMinor_, editDegree_);
+                for (int n = 0; n < e.count; ++n) {
+                    processor_.setJazzCustomVoicingNote(editMinor_, editDegree_, e.offsets[n], true);
+                }
+                refreshCustomEditor();
+            };
+            row->deleteButton.onClick = [this, e] {
+                processor_.deleteJazzUserLibraryEntry(e.name);
+                rebuildUserLibraryResults();
+            };
+            userLibraryCard_->addRow(*row, 58);
+        }
+
+        if (userLibraryRows_.isEmpty()) {
+            userLibraryEmptyNote_.setText(
+                "Nothing saved yet -- pull a chord out of a MIDI file below, or save one you've "
+                "drawn by hand further down.",
+                look::muted);
+            userLibraryCard_->addRow(userLibraryEmptyNote_, 30);
+        }
+    }
+
+    /** Rebuilds "Chords found in that file" from the last MIDI analysis --
+     *  called once the card exists and again every time a new file is
+     *  analysed. Deselects whatever the save form below was pointed at,
+     *  since a candidate index from the previous file means nothing here. */
+    void rebuildMidiCandidates() {
+        if (midiCandidatesCard_ == nullptr) return;
+        midiCandidatesCard_->clearRows();
+        midiCandidateRows_.clear();
+        midiSaveCandidateIndex_ = -1;
+        midiSaveSelectionNote_.setText("Pick \"Save...\" on a chord above first.", look::muted);
+
+        const int count = processor_.jazzPendingMidiImportCandidateCount();
+        if (count == 0) {
+            midiCandidatesEmptyNote_.setText(
+                "Analyse a MIDI file above to see the chords it actually found.", look::muted);
+            midiCandidatesCard_->addRow(midiCandidatesEmptyNote_, 24);
+            return;
+        }
+
+        for (int i = 0; i < count; ++i) {
+            const auto c = processor_.jazzPendingMidiImportCandidate(i);
+            auto* row = midiCandidateRows_.add(new MidiCandidateRow());
+            row->nameLabel.setText(
+                customDegreeLabel(c.degree) + " above the key, " + (c.minor ? "minor" : "major") +
+                    ":  " + spellOffsets(c.offsets, c.count) + "   (seen " + juce::String(c.votes) +
+                    (c.votes == 1 ? " time)" : " times)"),
+                juce::dontSendNotification);
+            row->previewButton.onClick = [this, i] { processor_.previewJazzMidiCandidate(i); };
+            row->loadButton.onClick = [this, i] {
+                const auto c2 = processor_.jazzPendingMidiImportCandidate(i);
+                processor_.clearJazzCustomVoicing(editMinor_, editDegree_);
+                for (int n = 0; n < c2.count; ++n) {
+                    processor_.setJazzCustomVoicingNote(editMinor_, editDegree_, c2.offsets[n], true);
+                }
+                refreshCustomEditor();
+            };
+            row->saveButton.onClick = [this, i] { selectMidiCandidateToSave(i); };
+            midiCandidatesCard_->addRow(*row, 26);
+        }
+    }
+
+    /** Points the "Save a chord to your library" form at one candidate from
+     *  the list above, so its Save button knows what to write. */
+    void selectMidiCandidateToSave(int index) {
+        midiSaveCandidateIndex_ = index;
+        const auto c = processor_.jazzPendingMidiImportCandidate(index);
+        midiSaveSelectionNote_.setText(
+            "Saving: " + customDegreeLabel(c.degree) + " above the key, " +
+                (c.minor ? "minor" : "major") + ":  " + spellOffsets(c.offsets, c.count),
+            look::accent);
     }
 
     /** Where the keyboard editor's root is drawn: the actual note the chord
@@ -1543,13 +1941,35 @@ private:
         aSmooth_, aVoices_;
 
     // --- Chord library.
-    look::Note libraryIntro_, libraryThemeLabel_, libraryQualityLabel_, libraryResultsEmptyNote_;
+    look::Note libraryIntro_, libraryThemeLabel_, libraryQualityLabel_, libraryArtistLabel_,
+        libraryResultsEmptyNote_;
     juce::OwnedArray<juce::TextButton> libraryThemeButtons_, libraryQualityButtons_;
     Grid libraryThemeGrid_{3, 26}, libraryQualityGrid_{3, 26};
     int libraryThemeFilter_ = -1;     // -1 = all themes
     int libraryQualityFilter_ = -1;   // -1 = all qualities
+    juce::TextEditor libraryArtistFilterEditor_;   // substring match, empty = all
     look::Card* libraryResultsCard_ = nullptr;   // owned by Page::cards_
     juce::OwnedArray<LibraryRow> libraryRows_;
+
+    // --- Your library: personal chords, same filters as above.
+    look::Card* userLibraryCard_ = nullptr;   // owned by Page::cards_
+    juce::OwnedArray<UserLibraryRow> userLibraryRows_;
+    look::Note userLibraryEmptyNote_;
+
+    /** Fills a theme/quality combo box pair the same way for every
+     *  credit-a-chord form -- MIDI candidate save and hand-drawn save alike. */
+    void populateLibraryPickerCombos(juce::ComboBox& themeCombo, juce::ComboBox& qualityCombo) {
+        themeCombo.clear();
+        for (int t = 0; t < jazz::kLibraryThemeCount; ++t) {
+            themeCombo.addItem(jazz::libraryThemeName(static_cast<jazz::LibraryTheme>(t)), t + 1);
+        }
+        themeCombo.setSelectedItemIndex(0, juce::dontSendNotification);
+        qualityCombo.clear();
+        for (int q = 0; q < jazz::kLibraryQualityCount; ++q) {
+            qualityCombo.addItem(jazz::libraryQualityName(static_cast<jazz::LibraryQuality>(q)), q + 1);
+        }
+        qualityCombo.setSelectedItemIndex(0, juce::dontSendNotification);
+    }
 
     // --- Custom chord dictionary.
     juce::ToggleButton customOn_, customUseMajor_, customUseMinor_, customFixedRegister_;
@@ -1558,6 +1978,13 @@ private:
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> aCustomOn_,
         aCustomUseMajor_, aCustomUseMinor_, aCustomFixedRegister_;
+
+    // --- Save the currently drawn voicing to Your library.
+    look::Note customSaveLabel_, customSaveStatus_;
+    juce::TextEditor customSaveNameEditor_, customSaveArtistEditor_, customSaveSongEditor_;
+    juce::ComboBox customSaveThemeCombo_, customSaveQualityCombo_;
+    Grid customSaveComboGrid_{2, 28};
+    juce::TextButton customSaveButton_;
 
     // Which (context, degree) the keyboard editor below is showing right now
     // -- pure UI state, not a parameter; the dictionary itself is written
@@ -1591,9 +2018,25 @@ private:
     juce::TextButton copyTableMajorToMinor_, copyTableMinorToMajor_;
     Grid copyTableGrid_{2, 26};
 
-    look::Note midiImportNote_, midiImportStatus_;
-    juce::TextButton midiImportButton_;
+    // --- Import chords from MIDI.
+    look::Note midiImportNote_, midiImportStatus_, midiWholeDictLabel_, midiWholeDictStatus_;
+    juce::TextButton midiImportButton_, midiUseNowButton_, midiSaveAsPresetButton_;
     std::unique_ptr<juce::FileChooser> midiChooser_;
+    juce::TextEditor midiPresetNameEditor_;
+    Holder midiSaveAsPresetRow_;
+
+    // "Chords found in that file" -- the dynamic candidate list.
+    look::Card* midiCandidatesCard_ = nullptr;   // owned by Page::cards_
+    juce::OwnedArray<MidiCandidateRow> midiCandidateRows_;
+    look::Note midiCandidatesEmptyNote_;
+
+    // "Save a chord to your library" -- static form the rows above point at.
+    int midiSaveCandidateIndex_ = -1;   // -1 = nothing picked yet
+    look::Note midiSaveSelectionNote_, midiSaveStatus_;
+    juce::TextEditor midiSaveNameEditor_, midiSaveArtistEditor_, midiSaveSongEditor_;
+    juce::ComboBox midiSaveThemeCombo_, midiSaveQualityCombo_;
+    Grid midiSaveComboGrid_{2, 28};
+    juce::TextButton midiSaveButton_;
 
     // --- Factory chord dictionaries.
     look::Note factoryIntro_, factoryStatus_;

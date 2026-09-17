@@ -267,10 +267,28 @@ ImportResult analyzeForCustomDictionary(const ImportNote* notes, int count,
             entry.count = best->count;
             for (int i = 0; i < best->count; ++i) entry.offsets[i] = best->offsets[i];
             ++result.degreesFilled;
+
+            // Every distinct shape seen at this degree, not just the winner
+            // dict kept -- what lets a caller browse and pick a single
+            // chord instead of only ever taking the whole table.
+            for (const auto& vote : v) {
+                ImportCandidate c;
+                c.minor = ctx == 1;
+                c.degree = degree;
+                c.count = vote.count;
+                for (int i = 0; i < vote.count; ++i) c.offsets[i] = vote.offsets[i];
+                c.votes = vote.votes;
+                result.candidates.push_back(c);
+            }
         }
     }
     result.dict.useMajor = true;
     result.dict.useMinor = true;
+
+    std::sort(result.candidates.begin(), result.candidates.end(),
+              [](const ImportCandidate& a, const ImportCandidate& b) { return a.votes > b.votes; });
+    constexpr size_t kMaxCandidates = 24;
+    if (result.candidates.size() > kMaxCandidates) result.candidates.resize(kMaxCandidates);
 
     return result;
 }

@@ -255,15 +255,11 @@ build one chord well and reuse it. **Copy whole major table to minor** (and
 back) copies all twelve degrees across contexts untransposed, since major and
 minor already share the same twelve scale degrees.
 
-**Generate from MIDI** runs the same idea in reverse: feed it a MIDI file and
-it finds the key centre (or centres, if the performance modulates) and, within
-each, what chord was actually played over which scale degree, filling in as
-much of the table as the file gives evidence for. It is a heuristic --
-built-in-dictionary jazz musicians do not label their own chords -- so treat
-it as a fast first draft: check the keyboard afterwards and fix anything it
-got wrong the same way you would edit a hand-built entry, including reaching
-for Record or the note grid directly. It replaces the whole dictionary, so
-save a preset first if the existing one is worth keeping.
+**Save this voicing to Your library** keeps just the currently selected
+degree's chord, under a name and a credit -- see *Your library* below. Name
+and artist are both required; song is optional. This is the hand-drawn
+counterpart to saving a chord pulled from a MIDI file, which lives in its own
+card further up the page -- see *Import chords from MIDI*.
 
 Normally a custom voicing's own octave is re-picked every chord, the same
 way the built-in dictionary's is — whichever register leads most smoothly
@@ -286,7 +282,7 @@ an older version of this dictionary, back when it picked one of six fixed
 chord types per degree rather than an explicit voicing, still loads -- it is
 converted to the equivalent voicing on the way in.
 
-Above your own saved presets sits **Factory chord dictionaries**: six
+Above your own saved presets sits **Factory chord dictionaries**: fourteen
 complete, built-in starting points, each an opinionated take on nearly every
 degree rather than one voicing at a time — **Barry Harris** (major 6th
 chords and a passing diminished on every chromatic degree), **Bill Evans**
@@ -294,11 +290,21 @@ chords and a passing diminished on every chromatic degree), **Bill Evans**
 "So What" voicing), **Just the Two of Us** (that tune's own vocabulary, built
 as a movable dictionary so it plays the same in any key), **Robert Glasper**
 (lydian major, dorian minor, sus and backdoor dominants — the neo-soul
-sound), and **Freddie Green** (sparse three-note comping shells). They are
-compiled in rather than saved as files, so there is nothing to install and
-Load is the only thing you can do to one — loading replaces the live custom
-dictionary exactly the way loading a saved preset does, so save your own
-first if you want to keep it.
+sound), **Freddie Green** (sparse three-note comping shells), **Herbie
+Hancock** (sus resolutions instead of pulling dominants, open fourths),
+**Thelonious Monk** (angular minor 6ths, diminished runs, whole-tone
+dominants), **Wayne Shorter** (melodic-minor colour, augmented major chords,
+fully altered dominants), **Chick Corea** (the Spanish/Phrygian-major move,
+bright add9 chords, quartal "Spain" fourths), **Antonio Carlos Jobim**
+(gentle bossa nova — mostly plain maj7/min7 and half-step-down 7b9
+modulations), **Stevie Wonder** (soul-jazz 6/9 tonics and 9sus/13
+dominants), **Steely Dan** (the "Mu major" tonic colour and sophisticated
+#11 dominants), and **Duke Ellington** (pre-bop 6ths and diminished passing
+tones, warmer and simpler than the rest). They are compiled in rather than
+saved as files, so there is nothing to install and Load is the only thing
+you can do to one — loading replaces the live custom dictionary exactly the
+way loading a saved preset does, so save your own first if you want to keep
+it.
 
 ### Chord library
 
@@ -309,8 +315,13 @@ gospel and neo-soul moves, altered and blues dominants, minor ii-V-i
 cadence shapes, and a dedicated Robert Glasper-inspired **neo-soul** theme
 (lydian major, dorian minor, sus and backdoor dominants) — for discovering
 chords to put into your own dictionaries rather than building every voicing
-from scratch. Filter by **Theme** or by **Best over** (which chord quality a
-voicing suits), then for anything in the results:
+from scratch. Filter by **Theme**, by **Best over** (which chord quality a
+voicing suits), or by **Artist or song** (a text filter matching whoever a
+voicing is credited to) — a handful of entries name exactly where they came
+from (the "So What" chord from *Kind of Blue*, the "Hendrix chord" from
+*Purple Haze*, the "Mu major" from Steely Dan, a *Maiden Voyage* sus
+voicing), most are generic theory shapes with no single source. For
+anything in the results:
 
 * **Preview** plays it on its own, through a short synthetic tone, so you can
   hear it without having to sing or play anything into the input.
@@ -323,6 +334,45 @@ voicing suits), then for anything in the results:
 A small chord-name readout sits under the keyboard editor itself, showing
 what you are actually drawing in as you click notes — useful whether you
 started from a library voicing or built one from nothing.
+
+### Your library
+
+Below the curated results sits **Your library** — the same idea, but chords
+you have chosen to keep yourself, each one credited to an artist or song you
+give it. Preview and Load work exactly like the curated library above, plus
+a **Delete** button, since these are yours to remove. It shares the Theme,
+Best over and Artist or song filters above it. There are two ways to add
+something here: pulling a chord out of a MIDI file (below), or drawing one
+by hand and using **Save this voicing to Your library** in the custom
+dictionary editor further down the page. Every entry needs a name and an
+artist; song is optional. Entries are stored under
+`~/Library/Application Support/Harmonizer/JazzLibraryEntries` on macOS (the
+platform-equivalent app-data folder elsewhere), one small XML file each.
+
+### Import chords from MIDI
+
+Feeds a MIDI performance through the same key-and-chord analysis the
+keyboard editor would show if you had played it by hand — finds the key
+centre (or centres, if the performance modulates) and every chord that
+actually recurs at each scale degree. It is a heuristic, not a
+transcription, so treat what it finds as a fast first draft. Analysing a
+file never touches your working dictionary by itself; what to do with the
+result is a separate, explicit choice:
+
+* **Use it now** replaces the whole live custom dictionary with what the
+  file found — the same "start fresh from this" a preset load gives, so
+  save a preset first if the existing one is worth keeping.
+* **Save as preset** files the whole analysed dictionary away under a name,
+  the same as any other saved preset, without touching whatever is
+  currently live.
+
+Underneath, **Chords found in that file** lists every distinct voicing the
+analysis actually saw, most-played first, each with **Preview**, **Load**
+(writes straight into whichever degree is selected in the custom dictionary
+editor), and **Save...** (points the **Save a chord to your library** card
+below it at that chord, ready for a name and a credit). This is the way to
+keep one signature moment out of a recording rather than the whole
+dictionary it came from.
 
 ### How it is put together
 

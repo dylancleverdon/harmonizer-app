@@ -18,7 +18,7 @@ constexpr LV kLibrary[] = {
     // --- Rootless: left-hand shapes with no root, the way a pianist voices
     // a chord when a bassist is already covering it.
     {"Rootless A", "3, 5, 7, 9 -- no root, the classic Bill Evans left-hand shape.",
-     LT::Rootless, LQ::Maj7, {4, 7, 11, 14}, 4},
+     LT::Rootless, LQ::Maj7, {4, 7, 11, 14}, 4, "Bill Evans"},
     {"Rootless B", "7, 9, 3, #11 -- a fourths-flavoured rootless shape a step up from A.",
      LT::Rootless, LQ::Maj7, {11, 14, 16, 18}, 4},
     {"Rootless A", "3, 5, b7, 9 -- no root, sits under a dominant without naming it.",
@@ -60,13 +60,16 @@ constexpr LV kLibrary[] = {
     // --- Quartal: stacked fourths instead of thirds -- So What, McCoy
     // Tyner, the modal-jazz sound.
     {"So What chord", "Four stacked fourths with a major 3rd on top -- the Kind of Blue voicing.",
-     LT::Quartal, LQ::Min7, {0, 5, 10, 15, 19}, 5},
+     LT::Quartal, LQ::Min7, {0, 5, 10, 15, 19}, 5, "Miles Davis", "So What (1959)"},
     {"Quartal triad", "Two stacked fourths -- light, ambiguous, works under a sus or min7 feel.",
      LT::Quartal, LQ::Any, {0, 5, 10}, 3},
     {"Quartal sus", "Three stacked fourths -- a bigger version of the quartal triad.",
      LT::Quartal, LQ::Dom7, {0, 5, 10, 15}, 4},
     {"Quartal upper structure", "Fourths stacked from the 3rd -- 3, 13, #9 over the root.",
      LT::Quartal, LQ::Maj7, {4, 9, 14}, 3},
+    {"Maiden Voyage sus", "Root, 4, 5, b7, 9 -- open and wide, no 3rd, the title track's floating "
+     "modal sound.",
+     LT::Quartal, LQ::Any, {0, 5, 7, 10, 14}, 5, "Herbie Hancock", "Maiden Voyage (1965)"},
 
     // --- Shell: the bare minimum needed to say the chord's quality --
     // root, third and seventh, nothing else in the way.
@@ -113,12 +116,12 @@ constexpr LV kLibrary[] = {
      LT::Gospel, LQ::Min7, {0, 3, 7, 10, 14, 17}, 6},
     {"Passing diminished", "Root, b3, b5, bb7 -- a symmetric diminished chord for a chromatic walk-up.",
      LT::Gospel, LQ::Dim7, {0, 3, 6, 9}, 4},
-    {"Add2 cluster", "Root, 2, 3, 5 -- a bright, close cluster common in gospel comping.",
-     LT::Gospel, LQ::Maj7, {0, 2, 4, 7}, 4},
+    {"Mu major", "Root, 2, 3, 5 -- a plain triad with a 2nd sitting right next to the 3rd.",
+     LT::Gospel, LQ::Maj7, {0, 2, 4, 7}, 4, "Steely Dan"},
 
     // --- Blues & altered dominants.
     {"7#9", "Root, 3, 5, b7, #9 -- the \"Hendrix chord,\" a blues and funk dominant.",
-     LT::Blues, LQ::Dom7, {0, 4, 7, 10, 15}, 5},
+     LT::Blues, LQ::Dom7, {0, 4, 7, 10, 15}, 5, "Jimi Hendrix", "Purple Haze (1967)"},
     {"7b9", "Root, 3, 5, b7, b9 -- a tense, classic altered-dominant colour.",
      LT::Blues, LQ::Dom7, {0, 4, 7, 10, 13}, 5},
     {"7alt", "3, b7, b9, #11 -- no root, a compact fully altered dominant.",

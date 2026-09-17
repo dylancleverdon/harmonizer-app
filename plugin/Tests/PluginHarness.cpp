@@ -1160,6 +1160,191 @@ static void testJazzLibraryPreview() {
               juce::String(afterPeak, 4) + ")");
 }
 
+// Builds a tiny on-disk MIDI file -- the same eight-bar Cmaj7/Dm7 then
+// Gmaj7/Am7 performance JazzHarness.cpp's own MIDI import check uses, known
+// to produce two key segments and a clean maj7 tonic -- for the staged
+// import and MIDI-candidate tests below, which need a real file to read.
+static juce::File writeTestMidiFile() {
+    constexpr int tpq = 480;
+    const double bar = tpq * 4.0;
+    juce::MidiMessageSequence seq;
+    const auto addChord = [&](int startBar, std::initializer_list<int> pitches) {
+        for (int p : pitches) {
+            seq.addEvent(juce::MidiMessage::noteOn(1, p, 0.8f), startBar * bar);
+            seq.addEvent(juce::MidiMessage::noteOff(1, p), startBar * bar + bar);
+        }
+    };
+    addChord(0, {60, 64, 67, 71});   // Cmaj7
+    addChord(1, {62, 65, 69, 72});   // Dm7
+    addChord(2, {60, 64, 67, 71});
+    addChord(3, {62, 65, 69, 72});
+    addChord(4, {67, 71, 74, 78});   // Gmaj7
+    addChord(5, {69, 72, 76, 79});   // Am7
+    addChord(6, {67, 71, 74, 78});
+    addChord(7, {69, 72, 76, 79});
+    seq.updateMatchedPairs();
+
+    juce::MidiFile midiFile;
+    midiFile.setTicksPerQuarterNote(tpq);
+    midiFile.addTrack(seq);
+
+    auto file = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                    .getChildFile("harmonizer_test_import.mid");
+    file.deleteFile();
+    juce::FileOutputStream stream(file);
+    midiFile.writeTo(stream);
+    return file;
+}
+
+// Analysis has to be inert on its own -- it's only "the last analyzed
+// file" until useJazzPendingMidiImport() or saveJazzPendingMidiImportAsPreset()
+// explicitly says what to do with it.
+static void testJazzMidiImportStaging() {
+    std::printf("\n-- Staged MIDI import --\n");
+    const auto file = writeTestMidiFile();
+
+    HarmonizerAudioProcessor p;
+    p.setPlayConfigDetails(1, 1, 48000.0, 256);
+    p.prepareToPlay(48000.0, 256);
+
+    // A known voicing in the live dictionary, to prove analysis alone can't
+    // touch it. Degree 2 starts pre-seeded (every degree does, with a
+    // plausible built-in-equivalent voicing) rather than blank, so clear it
+    // first to get a known starting point.
+    p.clearJazzCustomVoicing(false, 2);
+    p.setJazzCustomVoicingNote(false, 2, 3, true);
+    const auto before = p.jazzCustomEntry(false, 2);
+    check(before.count == 1, "seeded a note in the live dictionary before importing");
+
+    const auto summary = p.importJazzCustomDictionaryFromMidiFile(file);
+    check(summary.ok && summary.keySegments == 2, "the analysis itself succeeds");
+
+    const auto stillBefore = p.jazzCustomEntry(false, 2);
+    check(stillBefore.count == before.count && stillBefore.offsets[0] == before.offsets[0],
+          "analysis alone never touches the live dictionary");
+    check(p.jazzPendingMidiImportCandidateCount() > 0, "the analysis surfaces candidates");
+
+    check(p.useJazzPendingMidiImport(), "useJazzPendingMidiImport() applies the staged result");
+    const auto tonic = p.jazzCustomEntry(false, 0);
+    bool has3 = false, has7 = false;
+    for (int i = 0; i < tonic.count; ++i) {
+        if (tonic.offsets[i] == 4) has3 = true;
+        if (tonic.offsets[i] == 11) has7 = true;
+    }
+    check(tonic.count == 3 && has3 && has7, "applying it writes the analyzed tonic chord in");
+
+    // Saving as a preset from a second processor -- proves the preset path
+    // is equally inert on the live dictionary. Every degree starts
+    // pre-seeded rather than blank, so this compares against a snapshot
+    // taken first rather than assuming an empty entry.
+    HarmonizerAudioProcessor p2;
+    const auto beforeSave = p2.jazzCustomEntry(false, 0);
+    check(p2.importJazzCustomDictionaryFromMidiFile(file).ok,
+          "a second, fresh processor can analyse the same file");
+    check(p2.saveJazzPendingMidiImportAsPreset("__test_midi_preset__"),
+          "the staged result saves as a preset");
+    const auto afterSave = p2.jazzCustomEntry(false, 0);
+    bool degreeUnchanged = afterSave.count == beforeSave.count;
+    for (int i = 0; degreeUnchanged && i < afterSave.count; ++i) {
+        degreeUnchanged = afterSave.offsets[i] == beforeSave.offsets[i];
+    }
+    check(degreeUnchanged, "saving as a preset still never touches the live dictionary");
+    check(p2.loadJazzDictionaryPreset("__test_midi_preset__"), "the saved preset loads back");
+    check(p2.jazzCustomEntry(false, 0).count == 3, "the loaded preset has the analyzed tonic chord");
+    p2.deleteJazzDictionaryPreset("__test_midi_preset__");
+
+    HarmonizerAudioProcessor fresh;
+    check(!fresh.useJazzPendingMidiImport(),
+          "a fresh processor with no analysis yet has nothing to apply");
+    check(!fresh.saveJazzPendingMidiImportAsPreset("__should_not_exist__"),
+          "and nothing to save as a preset either");
+}
+
+// The personal library round-trips through disk the same way a dictionary
+// preset does, and enforces the one rule the UI is supposed to enforce too:
+// no entry without an artist.
+static void testJazzUserLibrary() {
+    std::printf("\n-- Your library --\n");
+    HarmonizerAudioProcessor p;
+
+    HarmonizerAudioProcessor::UserLibraryEntry entry;
+    entry.name = "__test_entry__";
+    entry.description = "A test chord.";
+    entry.artist = "";   // blank on purpose
+    entry.song = "Some Song";
+    entry.theme = jazz::LibraryTheme::Gospel;
+    entry.quality = jazz::LibraryQuality::Maj7;
+    entry.count = 3;
+    entry.offsets[0] = 0;
+    entry.offsets[1] = 4;
+    entry.offsets[2] = 7;
+    check(!p.saveJazzUserLibraryEntry(entry), "saving without an artist is refused");
+
+    entry.artist = "Test Artist";
+    check(p.saveJazzUserLibraryEntry(entry), "saving with an artist and a real voicing succeeds");
+
+    const auto entries = p.jazzUserLibraryEntries();
+    bool found = false;
+    for (const auto& e : entries) {
+        if (e.name != entry.name) continue;
+        found = e.artist == entry.artist && e.song == entry.song && e.count == 3 &&
+                e.offsets[0] == 0 && e.offsets[1] == 4 && e.offsets[2] == 7 &&
+                e.theme == jazz::LibraryTheme::Gospel && e.quality == jazz::LibraryQuality::Maj7;
+        break;
+    }
+    check(found, "the saved entry shows up with everything intact");
+
+    check(p.deleteJazzUserLibraryEntry(entry.name), "the entry deletes");
+    bool stillThere = false;
+    for (const auto& e : p.jazzUserLibraryEntries()) stillThere |= (e.name == entry.name);
+    check(!stillThere, "and is gone from the list");
+}
+
+// A MIDI candidate previews and saves to the library the same way a chord
+// library entry does -- same preview mechanism, same required-attribution
+// rule on the save.
+static void testJazzMidiCandidatePreviewAndSave() {
+    std::printf("\n-- MIDI candidate preview and save --\n");
+    const double sr = 48000.0;
+    const auto file = writeTestMidiFile();
+
+    HarmonizerAudioProcessor p;
+    p.setPlayConfigDetails(1, 1, sr, 256);
+    p.prepareToPlay(sr, 256);
+    check(p.importJazzCustomDictionaryFromMidiFile(file).ok, "the file analyses");
+    const int candidateCount = p.jazzPendingMidiImportCandidateCount();
+    check(candidateCount > 0, "there is at least one candidate to preview and save");
+    if (candidateCount == 0) return;
+
+    p.previewJazzMidiCandidate(0);
+    juce::AudioBuffer<float> buffer(1, 256);
+    juce::MidiBuffer noMidi;
+    float peak = 0.0f;
+    const int blocks = static_cast<int>(sr * 0.3) / 256;
+    for (int i = 0; i < blocks; ++i) {
+        buffer.clear();
+        p.processBlock(buffer, noMidi);
+        peak = juce::jmax(peak, buffer.getMagnitude(0, 0, buffer.getNumSamples()));
+    }
+    check(peak > 0.01f, juce::String("previewing a candidate is audible (peak ") +
+                            juce::String(peak, 4) + ")");
+
+    check(!p.saveJazzMidiCandidateToLibrary(0, "Test Candidate", "", "", jazz::LibraryTheme::Gospel,
+                                            jazz::LibraryQuality::Maj7),
+          "saving a candidate without an artist is refused");
+    check(!p.saveJazzMidiCandidateToLibrary(-1, "Test Candidate", "Test Artist", "", jazz::LibraryTheme::Gospel,
+                                            jazz::LibraryQuality::Maj7),
+          "saving an out-of-range candidate index is refused");
+    check(p.saveJazzMidiCandidateToLibrary(0, "Test Candidate", "Test Artist", "Test Song",
+                                           jazz::LibraryTheme::Gospel, jazz::LibraryQuality::Maj7),
+          "saving a real candidate with an artist succeeds");
+
+    bool found = false;
+    for (const auto& e : p.jazzUserLibraryEntries()) found |= (e.name == "Test Candidate");
+    check(found, "the saved candidate shows up in Your library");
+    p.deleteJazzUserLibraryEntry("Test Candidate");
+}
+
 // Factory presets are compiled in rather than saved on disk, but loading one
 // has to have exactly the same effect a saved preset load does: replace the
 // live custom dictionary and switch it on.
@@ -1168,7 +1353,7 @@ static void testJazzFactoryPresets() {
     HarmonizerAudioProcessor p;
 
     const int count = p.jazzFactoryDictionaryPresetCount();
-    check(count == 6, juce::String("there are six factory presets (got ") + juce::String(count) + ")");
+    check(count == 14, juce::String("there are fourteen factory presets (got ") + juce::String(count) + ")");
     for (int i = 0; i < count; ++i) {
         check(p.jazzFactoryDictionaryPresetName(i).isNotEmpty() &&
                   p.jazzFactoryDictionaryPresetDescription(i).isNotEmpty(),
@@ -1617,6 +1802,9 @@ int main() {
     testJazzMudAvoidance();
     testJazzLockedCustomRegister();
     testJazzLibraryPreview();
+    testJazzMidiImportStaging();
+    testJazzUserLibrary();
+    testJazzMidiCandidatePreviewAndSave();
     testJazzFactoryPresets();
     testJazzAutoVoices();
     testJazzCustomDictionary();
