@@ -9,6 +9,7 @@
 // travel.
 
 #include "JazzChordLibrary.h"
+#include "JazzDictionaryFactoryPresets.h"
 #include "JazzMidiImport.h"
 #include "JazzVoicer.h"
 
@@ -812,6 +813,50 @@ int main() {
             everyThemeUsed &= used;
         }
         check(everyThemeUsed, "every theme has at least one voicing filed under it");
+    }
+
+    // --- Factory dictionary presets: the same class of transcription error
+    // as the library above, but across a whole 24-degree table per preset
+    // rather than one voicing at a time.
+    std::printf("\n-- Factory chord dictionaries --\n");
+    {
+        const int total = jazz::factoryPresetCount();
+        check(total > 0, "there is at least one factory preset");
+
+        bool allNamed = true;
+        bool allValid = true;
+        bool everyPresetFillsMost = true;
+        for (int i = 0; i < total; ++i) {
+            const auto& preset = jazz::factoryPreset(i);
+            if (preset.name == nullptr || preset.name[0] == '\0' || preset.description == nullptr ||
+                preset.description[0] == '\0') {
+                allNamed = false;
+            }
+
+            int filled = 0;
+            for (int ctx = 0; ctx < 2; ++ctx) {
+                for (int degree = 0; degree < 12; ++degree) {
+                    const auto& entry = ctx == 1 ? preset.dict.minor[degree] : preset.dict.major[degree];
+                    if (entry.count < 0 || entry.count > jazz::kMaxVoicingNotes) { allValid = false; continue; }
+                    if (entry.count > 0) ++filled;
+                    for (int j = 0; j < entry.count; ++j) {
+                        if (entry.offsets[j] < -jazz::kMaxCustomOffset ||
+                            entry.offsets[j] > jazz::kMaxCustomOffset) {
+                            allValid = false;
+                        }
+                    }
+                }
+            }
+            // A preset that leaves most degrees blank would just be the
+            // built-in dictionary with extra steps -- the whole point of a
+            // factory preset is that it actually has an opinion on nearly
+            // every degree.
+            if (filled < 20) everyPresetFillsMost = false;
+        }
+        checkf(allValid, "every preset's entries have a valid, in-range count and offsets (%d presets)",
+              total);
+        check(allNamed, "every preset has a name and a description");
+        check(everyPresetFillsMost, "every preset fills at least 20 of its 24 degrees");
     }
 
     std::printf("\n=============================================\n");

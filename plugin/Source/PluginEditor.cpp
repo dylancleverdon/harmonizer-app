@@ -460,6 +460,18 @@ public:
             "release every key and press a single one again.");
         mode.addRow(latchNote_, 58);
 
+        keyQualityLabel_.setText("KEY QUALITY", look::muted);
+        mode.addRow(keyQualityLabel_, 14);
+        keyQualityChips_ = std::make_unique<ChipGroup>(
+            apvts, P::jazzKeyQuality, juce::StringArray{"Auto", "Major", "Minor"});
+        mode.addRow(*keyQualityChips_, 28);
+        keyQualityNote_.setText(
+            "Auto is the rule above: one key held names a major key centre, two or more names a "
+            "minor one. Major or Minor overrides that -- hold just the one key you want as the "
+            "centre and this decides its quality instead, so a minor key centre never needs a "
+            "second finger down to stay minor.");
+        mode.addRow(keyQualityNote_, 58);
+
         keyRow_ = std::make_unique<look::StatRow>("Key centre", true);
         playingRow_ = std::make_unique<look::StatRow>("You are playing");
         chordRow_ = std::make_unique<look::StatRow>("Chord", true);
@@ -966,6 +978,38 @@ public:
             });
         };
 
+        // --- Factory dictionaries: full starting points built in, one
+        // player's or style's whole vocabulary rather than one chord at a
+        // time. Load-only -- there is nothing here to save over or delete.
+        auto& factoryCard = addCard("Factory chord dictionaries");
+        factoryIntro_.setText(
+            "Six curated starting points, built the same way your own dictionary is -- an "
+            "explicit voicing per scale degree, both major and minor. Load one to try it, then "
+            "tweak from there; loading replaces whatever is in your custom dictionary now, so "
+            "save your own first below if you want to keep it.");
+        factoryCard.addRow(factoryIntro_, 58);
+
+        for (int i = 0; i < processor_.jazzFactoryDictionaryPresetCount(); ++i) {
+            auto* row = factoryRows_.add(new FactoryPresetRow());
+            row->nameLabel.setText(processor_.jazzFactoryDictionaryPresetName(i),
+                                   juce::dontSendNotification);
+            row->descNote.setText(processor_.jazzFactoryDictionaryPresetDescription(i));
+            row->loadButton.onClick = [this, i] {
+                if (processor_.loadJazzFactoryDictionaryPreset(i)) {
+                    factoryStatus_.setText(
+                        "Loaded \"" + processor_.jazzFactoryDictionaryPresetName(i) + "\".",
+                        look::accent);
+                    setEditContext(false);
+                    setEditDegree(0);
+                } else {
+                    factoryStatus_.setText("Could not load that dictionary.", look::warn);
+                }
+            };
+            factoryCard.addRow(*row, 58);
+        }
+        factoryStatus_.setText("");
+        factoryCard.addRow(factoryStatus_, 24);
+
         // --- Presets for that dictionary: a named library on disk, so one
         // built for a project can be brought into another.
         auto& presetCard = addCard("Custom dictionary presets");
@@ -1281,6 +1325,33 @@ private:
         }
     };
 
+    /** One row of a factory dictionary: a name, a short description of its
+     *  vocabulary, and a single Load button -- there is nothing to preview
+     *  (it is a whole 24-degree dictionary, not one voicing) and nothing to
+     *  save over or delete, since it is compiled in rather than a file. */
+    class FactoryPresetRow final : public juce::Component {
+    public:
+        juce::Label nameLabel;
+        look::Note descNote;
+        juce::TextButton loadButton{"Load"};
+
+        FactoryPresetRow() {
+            nameLabel.setColour(juce::Label::textColourId, look::text);
+            nameLabel.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+            addAndMakeVisible(nameLabel);
+            addAndMakeVisible(descNote);
+            styleSmallButton(loadButton);
+            addAndMakeVisible(loadButton);
+        }
+
+        void resized() override {
+            constexpr int buttonW = 64;
+            nameLabel.setBounds(0, 0, juce::jmax(0, getWidth() - buttonW - 8), 18);
+            loadButton.setBounds(getWidth() - buttonW, 0, buttonW, 22);
+            descNote.setBounds(0, 20, getWidth(), juce::jmax(0, getHeight() - 20));
+        }
+    };
+
     /** Rebuilds the results card's rows from the library filtered by
      *  libraryThemeFilter_/libraryQualityFilter_ (-1 means "all"). Called
      *  once up front and again every time a filter button is clicked. */
@@ -1456,7 +1527,8 @@ private:
         aAvoidMud_, aAddBassNote_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aTranspose_,
         aTransposeAudio_;
-    std::unique_ptr<ChipGroup> octaveChips_, inversionChips_;
+    std::unique_ptr<ChipGroup> octaveChips_, inversionChips_, keyQualityChips_;
+    look::Note keyQualityLabel_, keyQualityNote_;
     std::unique_ptr<look::StatRow> keyRow_, playingRow_, chordRow_, voicingRow_, rangeRow_,
         smoothRow_;
     look::Note intro_, status_, tonesNote_, voicesNote_, voicesLabel_, octaveLabel_,
@@ -1522,6 +1594,10 @@ private:
     look::Note midiImportNote_, midiImportStatus_;
     juce::TextButton midiImportButton_;
     std::unique_ptr<juce::FileChooser> midiChooser_;
+
+    // --- Factory chord dictionaries.
+    look::Note factoryIntro_, factoryStatus_;
+    juce::OwnedArray<FactoryPresetRow> factoryRows_;
 
     // --- Custom dictionary presets.
     juce::TextEditor presetNameEditor_;

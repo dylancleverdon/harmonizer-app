@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "Harmonizer.h"
+#include "JazzDictionaryFactoryPresets.h"
 #include "JazzVoicer.h"
 
 /**
@@ -186,6 +187,13 @@ public:
         // major" mid-release. See jazzLatchActive_.
         static constexpr const char* jazzLatchKeys = "jazzLatchKeys";
 
+        // Overrides how many keys it takes to name a minor key centre.
+        // 0 = Auto (today's rule: one key is major, two or more is minor).
+        // 1 = Major, 2 = Minor -- either forces that quality off a single
+        // held key, so a minor key centre never needs a second finger down.
+        // See resolveKeyQuality().
+        static constexpr const char* jazzKeyQuality = "jazzKeyQuality";
+
         // How long a chord change cross-fades instead of snapping -- see
         // dsp::Params::glideMs. Only applied while jazz mode is on.
         static constexpr const char* jazzGlideMs = "jazzGlideMs";
@@ -231,6 +239,19 @@ public:
     bool saveJazzDictionaryPreset(const juce::String& name) const;
     bool loadJazzDictionaryPreset(const juce::String& name);
     bool deleteJazzDictionaryPreset(const juce::String& name) const;
+
+    /**
+     * Built-in dictionaries -- Barry Harris, Bill Evans, and the rest of
+     * JazzDictionaryFactoryPresets.h -- compiled in rather than saved on
+     * disk, so there is nothing to install and nothing a player can
+     * accidentally delete. Load-only: loading one replaces the live custom
+     * dictionary exactly the way loading a saved preset does (and turns the
+     * custom dictionary on), but there is no save/delete side to them.
+     */
+    int jazzFactoryDictionaryPresetCount() const;
+    juce::String jazzFactoryDictionaryPresetName(int index) const;
+    juce::String jazzFactoryDictionaryPresetDescription(int index) const;
+    bool loadJazzFactoryDictionaryPreset(int index);
 
     /**
      * Custom voicing editing, for the keyboard editor in the Jazz page. All
@@ -367,6 +388,7 @@ private:
     std::atomic<float>* pJazzTranspose_ = nullptr;
     std::atomic<float>* pJazzTransposeAudioIn_ = nullptr;
     std::atomic<float>* pJazzLatchKeys_ = nullptr;
+    std::atomic<float>* pJazzKeyQuality_ = nullptr;
     std::atomic<float>* pJazzGlideMs_ = nullptr;
     std::atomic<float>* pJazzChordHoldMs_ = nullptr;
 
@@ -443,8 +465,16 @@ private:
     int melodyTransposeSemitones() const;
 
     /** Captures a fresh latch from a set of keys (concert pitch) --
-     *  lowest key names the centre, two or more means minor. */
+     *  lowest key names the centre, two or more means minor, unless the Key
+     *  Quality switch overrides it. */
     void latchKeysFrom(const int* keys, int count);
+
+    /** What Key Quality actually decides, given what Auto would have picked
+     *  from the number of keys held (autoMinor). Auto (0) returns autoMinor
+     *  unchanged; Major (1) and Minor (2) return a fixed answer regardless
+     *  of how many keys are down -- the whole point of the switch is that a
+     *  minor key centre no longer needs two fingers held to get it. */
+    bool resolveKeyQuality(bool autoMinor) const;
 
     jazz::Voicer jazzVoicer_;
     bool jazzOn_ = false;                    // what the last block ran as

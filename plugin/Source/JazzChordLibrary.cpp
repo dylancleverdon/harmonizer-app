@@ -137,6 +137,26 @@ constexpr LV kLibrary[] = {
      LT::MinorCadence, LQ::Min7, {0, 3, 7, 11}, 4},
     {"i: min6/9", "Root, b3, 5, 6, 9 -- the classic minor tonic \"landing\" chord.",
      LT::MinorCadence, LQ::Min7, {0, 3, 7, 9, 14}, 5},
+
+    // --- Neo-soul: the Robert Glasper / D'Angelo vocabulary -- lydian major
+    // (always a #11), dorian minor (a natural 6th instead of the usual b6),
+    // and suspended or backdoor dominants that never need to resolve.
+    {"Neo-soul min11", "Root, b3, b7, 9, 11 -- no 5th, the core Glasper minor voicing.",
+     LT::NeoSoul, LQ::Min7, {0, 3, 10, 14, 17}, 5},
+    {"Min6/9", "Root, b3, 5, 6, 9 -- warm dorian colour, also a tonic \"landing\" chord.",
+     LT::NeoSoul, LQ::Min7, {0, 3, 7, 9, 14}, 5},
+    {"Maj9#11 (lydian)", "Root, 3, 7, 9, #11 -- the bright, floating major sound he leans on constantly.",
+     LT::NeoSoul, LQ::Maj7, {0, 4, 11, 14, 18}, 5},
+    {"9sus13 (backdoor)", "Root, 4, b7, 9, 13 -- a suspended dominant that never needs to resolve.",
+     LT::NeoSoul, LQ::Dom7, {0, 5, 10, 14, 21}, 5},
+    {"Add2, no 3rd", "Root, 2, 5 -- a bare open triad, 3rd left out, deliberately ambiguous.",
+     LT::NeoSoul, LQ::Any, {0, 2, 7}, 3},
+    {"Fourths + 9", "Root, 4, b7, 9 -- a quartal stack with a 9th on top instead of a 3rd.",
+     LT::NeoSoul, LQ::Min7, {0, 5, 10, 14}, 4},
+    {"Stacked b9/#9", "Root, 3, b7, b9, #9 -- a churchy altered dominant with both tensions in.",
+     LT::NeoSoul, LQ::Dom7, {0, 4, 10, 13, 15}, 5},
+    {"Open min9", "Root, b3, b7, 9 -- no 5th, leaves room underneath for a bass note.",
+     LT::NeoSoul, LQ::Min7, {0, 3, 10, 14}, 4},
 };
 
 constexpr int kLibraryCount = static_cast<int>(sizeof(kLibrary) / sizeof(kLibrary[0]));
@@ -163,6 +183,7 @@ const char* libraryThemeName(LibraryTheme theme) {
         case LibraryTheme::Gospel:         return "Gospel & neo-soul";
         case LibraryTheme::Blues:          return "Blues & altered";
         case LibraryTheme::MinorCadence:   return "Minor ii-V-i";
+        case LibraryTheme::NeoSoul:        return "Neo-soul (Glasper)";
         case LibraryTheme::Count:
         default:                          return "?";
     }

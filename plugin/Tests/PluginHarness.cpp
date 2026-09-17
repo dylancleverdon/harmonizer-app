@@ -566,6 +566,67 @@ static void testJazzLatch() {
               (live.minorKey ? "yes" : "no") + ")");
 }
 
+// Auto keeps the original one-key-major/two-key-minor rule; Major and Minor
+// override it so either quality can come from a single held key.
+static void testJazzKeyQuality() {
+    std::printf("\n-- Jazz key quality switch --\n");
+    const double sr = 48000.0;
+    const double f0 = 220.0;
+
+    const auto run = [&](int qualityIndex, bool holdSecondKey) {
+        HarmonizerAudioProcessor p;
+        setValue(p, HarmonizerAudioProcessor::ParamId::wetDry, 1.0f);
+        setValue(p, HarmonizerAudioProcessor::ParamId::jazzMode, 1.0f);
+        setChoice(p, HarmonizerAudioProcessor::ParamId::jazzKeyQuality, qualityIndex);
+        p.setPlayConfigDetails(1, 1, sr, 256);
+        p.prepareToPlay(sr, 256);
+
+        const int total = static_cast<int>(sr * 1.5);
+        std::vector<float> source(static_cast<size_t>(total));
+        makeVoice(source, f0, sr);
+        juce::AudioBuffer<float> buffer(1, 256);
+
+        int step = 0;
+        for (int pos = 0; pos < total; pos += 256) {
+            const int n = juce::jmin(256, total - pos);
+            buffer.setSize(1, n, false, false, true);
+            juce::FloatVectorOperations::copy(buffer.getWritePointer(0), source.data() + pos, n);
+            juce::MidiBuffer midi;
+            if (step == 0) midi.addEvent(juce::MidiMessage::noteOn(1, 48, 0.8f), 0);        // C3
+            else if (step == 5 && holdSecondKey) {
+                midi.addEvent(juce::MidiMessage::noteOn(1, 55, 0.8f), 0);                   // + G3
+            }
+            ++step;
+            p.processBlock(buffer, midi);
+        }
+        return p.jazzView();
+    };
+
+    // Auto, one key: today's original rule, unchanged.
+    const auto autoOne = run(0, false);
+    check(autoOne.sounding && !autoOne.minorKey,
+          "Auto with one key held still reads major, exactly as before the switch existed");
+
+    // Auto, two keys: also unchanged.
+    const auto autoTwo = run(0, true);
+    check(autoTwo.sounding && autoTwo.minorKey,
+          "Auto with two keys held still reads minor, exactly as before the switch existed");
+
+    // Minor, one key: the whole point of the switch -- no second finger needed.
+    const auto minorOne = run(2, false);
+    check(minorOne.sounding && minorOne.minorKey && minorOne.heldKeys == 1,
+          juce::String("Minor forces minor off a single held key (minor=") +
+              (minorOne.minorKey ? "yes" : "no") +
+              ", held=" + juce::String(minorOne.heldKeys) + ")");
+
+    // Major, two keys: forced major even though Auto would have read this as minor.
+    const auto majorTwo = run(1, true);
+    check(majorTwo.sounding && !majorTwo.minorKey && majorTwo.heldKeys == 2,
+          juce::String("Major forces major even with a second key down (minor=") +
+              (majorTwo.minorKey ? "yes" : "no") +
+              ", held=" + juce::String(majorTwo.heldKeys) + ")");
+}
+
 // The sustain pedal (CC64) freezes the currently sounding chord -- even as
 // the melody note moves on -- and stands in for latch while held, so the
 // key centre survives every keyboard key being released too.
@@ -1099,6 +1160,54 @@ static void testJazzLibraryPreview() {
               juce::String(afterPeak, 4) + ")");
 }
 
+// Factory presets are compiled in rather than saved on disk, but loading one
+// has to have exactly the same effect a saved preset load does: replace the
+// live custom dictionary and switch it on.
+static void testJazzFactoryPresets() {
+    std::printf("\n-- Factory chord dictionaries --\n");
+    HarmonizerAudioProcessor p;
+
+    const int count = p.jazzFactoryDictionaryPresetCount();
+    check(count == 6, juce::String("there are six factory presets (got ") + juce::String(count) + ")");
+    for (int i = 0; i < count; ++i) {
+        check(p.jazzFactoryDictionaryPresetName(i).isNotEmpty() &&
+                  p.jazzFactoryDictionaryPresetDescription(i).isNotEmpty(),
+              juce::String("preset ") + juce::String(i) + " has a name and a description");
+    }
+
+    check(!p.loadJazzFactoryDictionaryPreset(-1), "loading an out-of-range index fails");
+    check(!p.loadJazzFactoryDictionaryPreset(count), "loading past the end fails");
+
+    // Barry Harris: degree 0 (I) is a plain major 6th chord, root-3-5-6.
+    check(p.loadJazzFactoryDictionaryPreset(0), "Barry Harris loads");
+    check(*p.apvts.getRawParameterValue(HarmonizerAudioProcessor::ParamId::jazzCustomOn) > 0.5f,
+          "loading a factory preset switches the custom dictionary on");
+    {
+        const auto entry = p.jazzCustomEntry(false, 0);
+        const bool matches = entry.count == 4 && entry.offsets[0] == 0 && entry.offsets[1] == 4 &&
+                             entry.offsets[2] == 7 && entry.offsets[3] == 9;
+        check(matches, "Barry Harris' major I chord is a root-3-5-6 (major 6th) voicing");
+    }
+
+    // Loading a second preset has to fully replace the first, not merge with
+    // it -- Glasper's major I is a lydian maj9#11, nothing like a 6th chord.
+    check(p.loadJazzFactoryDictionaryPreset(4), "Robert Glasper (neo-soul) loads");
+    {
+        const auto major0 = p.jazzCustomEntry(false, 0);
+        const bool matchesMajor = major0.count == 5 && major0.offsets[0] == 0 &&
+                                  major0.offsets[1] == 4 && major0.offsets[2] == 11 &&
+                                  major0.offsets[3] == 14 && major0.offsets[4] == 18;
+        check(matchesMajor,
+              "loading a second preset replaces the first -- Glasper's major I is a maj9#11");
+
+        const auto minor7 = p.jazzCustomEntry(true, 7);
+        const bool matchesMinor = minor7.count == 4 && minor7.offsets[0] == 0 &&
+                                  minor7.offsets[1] == 4 && minor7.offsets[2] == 10 &&
+                                  minor7.offsets[3] == 13;
+        check(matchesMinor, "Glasper's minor v is a cadential 7b9");
+    }
+}
+
 // Auto harmony voices ignores the Chord Voices slider entirely and lets
 // through exactly as many notes as the chord naturally has -- extensions
 // included -- rather than the number picked ahead of time.
@@ -1498,6 +1607,7 @@ int main() {
     testJazzChordMode();
     testJazzTranspose();
     testJazzLatch();
+    testJazzKeyQuality();
     testJazzSustain();
     testJazzGlide();
     testJazzChordStability();
@@ -1507,6 +1617,7 @@ int main() {
     testJazzMudAvoidance();
     testJazzLockedCustomRegister();
     testJazzLibraryPreview();
+    testJazzFactoryPresets();
     testJazzAutoVoices();
     testJazzCustomDictionary();
 

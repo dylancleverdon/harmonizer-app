@@ -132,6 +132,7 @@ HarmonizerAudioProcessor::HarmonizerAudioProcessor()
     pJazzTranspose_ = apvts.getRawParameterValue(ParamId::jazzTranspose);
     pJazzTransposeAudioIn_ = apvts.getRawParameterValue(ParamId::jazzTransposeAudioIn);
     pJazzLatchKeys_ = apvts.getRawParameterValue(ParamId::jazzLatchKeys);
+    pJazzKeyQuality_ = apvts.getRawParameterValue(ParamId::jazzKeyQuality);
     pJazzGlideMs_ = apvts.getRawParameterValue(ParamId::jazzGlideMs);
     pJazzChordHoldMs_ = apvts.getRawParameterValue(ParamId::jazzChordHoldMs);
 
@@ -313,6 +314,13 @@ HarmonizerAudioProcessor::createLayout() {
 
     layout.add(std::make_unique<AudioParameterBool>(
         ParameterID{ParamId::jazzLatchKeys, 1}, "Latch Key Centre", false));
+
+    // Auto keeps the original rule (one key held = major, two or more =
+    // minor); Major/Minor override it so a minor key centre only ever needs
+    // the one key you actually want named, not a second finger to prove it.
+    layout.add(std::make_unique<AudioParameterChoice>(
+        ParameterID{ParamId::jazzKeyQuality, 1}, "Key Quality",
+        StringArray{"Auto", "Major", "Minor"}, 0));
 
     // How long a chord change cross-fades between the tones leaving and the
     // tones arriving, instead of the ~15 ms floor that already exists just
@@ -859,12 +867,19 @@ int HarmonizerAudioProcessor::collectKeys(int* keys, int maxKeys) const {
     return count;
 }
 
+bool HarmonizerAudioProcessor::resolveKeyQuality(bool autoMinor) const {
+    const int q = static_cast<int>(std::lround(pJazzKeyQuality_->load()));
+    if (q == 1) return false;   // Major, forced
+    if (q == 2) return true;    // Minor, forced
+    return autoMinor;           // Auto
+}
+
 void HarmonizerAudioProcessor::latchKeysFrom(const int* keys, int count) {
     if (keys == nullptr || count <= 0) return;
     int lowest = keys[0];
     for (int i = 1; i < count; ++i) lowest = juce::jmin(lowest, keys[i]);
     jazzLatchedKeyPc_ = ((lowest % 12) + 12) % 12;
-    jazzLatchedMinor_ = count >= 2;
+    jazzLatchedMinor_ = resolveKeyQuality(count >= 2);
     jazzLatchActive_ = true;
 }
 
@@ -1110,6 +1125,20 @@ void HarmonizerAudioProcessor::jazzUpdate(int frames) {
         // reflected by collectKeys() being in ascending note order;
         // Voicer::update() only reads the first entry and the count.
         if (liveKeyCount > 2) keyCount = 2;
+
+        // Voicer::update() reads minor purely from keyCount >= 2, so the Key
+        // Quality switch has to act by shaping keys[]/keyCount here rather
+        // than by passing a separate flag through. Major forces a lone key
+        // through even if a second happens to be down; Minor synthesises one
+        // (never below keys[0], so it can't become the new lowest key) when
+        // only one is actually held.
+        if (keyCount > 0) {
+            if (resolveKeyQuality(keyCount >= 2)) {
+                if (keyCount < 2) { keys[1] = keys[0] + 7; keyCount = 2; }
+            } else {
+                keyCount = 1;
+            }
+        }
     }
     jvKeyLatched_.store(latched && jazzLatchActive_);
 
@@ -1467,6 +1496,41 @@ bool HarmonizerAudioProcessor::loadJazzDictionaryPreset(const juce::String& name
 
 bool HarmonizerAudioProcessor::deleteJazzDictionaryPreset(const juce::String& name) const {
     return jazzPresetFile(name).deleteFile();
+}
+
+int HarmonizerAudioProcessor::jazzFactoryDictionaryPresetCount() const {
+    return jazz::factoryPresetCount();
+}
+
+juce::String HarmonizerAudioProcessor::jazzFactoryDictionaryPresetName(int index) const {
+    return jazz::factoryPreset(index).name;
+}
+
+juce::String HarmonizerAudioProcessor::jazzFactoryDictionaryPresetDescription(int index) const {
+    return jazz::factoryPreset(index).description;
+}
+
+bool HarmonizerAudioProcessor::loadJazzFactoryDictionaryPreset(int index) {
+    if (index < 0 || index >= jazz::factoryPresetCount()) return false;
+    const jazz::FactoryPreset& preset = jazz::factoryPreset(index);
+
+    setParamValue(ParamId::jazzCustomUseMajor, preset.dict.useMajor ? 1.0f : 0.0f);
+    setParamValue(ParamId::jazzCustomUseMinor, preset.dict.useMinor ? 1.0f : 0.0f);
+
+    for (int ctx = 0; ctx < 2; ++ctx) {
+        const bool minor = ctx == 1;
+        for (int degree = 0; degree < 12; ++degree) {
+            const jazz::CustomEntry& entry = minor ? preset.dict.minor[degree] : preset.dict.major[degree];
+            clearJazzCustomVoicing(minor, degree);
+            for (int i = 0; i < entry.count; ++i) {
+                setJazzCustomVoicingNote(minor, degree, entry.offsets[i], true);
+            }
+        }
+    }
+
+    // Loading a preset means "use this now", the same as a saved one.
+    setParamValue(ParamId::jazzCustomOn, 1.0f);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
