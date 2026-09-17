@@ -22,7 +22,7 @@ inline const Daw kDaws[] = {
     {"logic", "Logic Pro", true,
      "1. Make a Software Instrument track.\n"
      "2. In its Instrument slot choose:\n"
-     "      AU MIDI-controlled Effects > Dylan Cleverdon > Harmonizer\n"
+     "      AU MIDI-controlled Effects > Baastik Labs > Harmonizer\n"
      "3. At the top of the plugin window, set Side Chain to the audio track\n"
      "   your voice or horn is on.\n"
      "4. Play that instrument track's keyboard. Your audio comes in through the\n"

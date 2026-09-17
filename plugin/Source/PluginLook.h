@@ -2,34 +2,38 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 /**
- * The Android app's visual language, reused here so the plugin and the phone
- * look like one product: dark ground, rounded surface cards with small
- * upper-case titles, a teal accent, pill-shaped selectors and thin bar meters.
+ * Logic Pro's own plugin-window language: flat neutral-graphite panels,
+ * hairline dividers instead of shadows, thin-line knobs and sliders, and a
+ * single Logic-blue accent for anything active or selected -- so the plugin
+ * reads as a control surface that belongs in the chain, not a skin dropped
+ * into it. Colours and control geometry confirmed against a screenshot of a
+ * stock Logic plugin (Limiter) and Logic's own documented palette.
  */
 namespace harmonizer::look {
 
-inline const juce::Colour background{0xff0e1113};
-inline const juce::Colour surface{0xff171b1e};
-inline const juce::Colour surfaceVariant{0xff232a2e};
-inline const juce::Colour accent{0xff4dd0c0};
-inline const juce::Colour onAccent{0xff00201c};
-inline const juce::Colour text{0xffe3e6e8};
-inline const juce::Colour muted{0xffa8b4b8};
-inline const juce::Colour warn{0xffe8a33d};
-inline const juce::Colour error{0xffe05c5c};
+inline const juce::Colour background{0xff1a1a1a};
+inline const juce::Colour surface{0xff242424};
+inline const juce::Colour surfaceVariant{0xff373737};
+inline const juce::Colour accent{0xff00a3e0};
+inline const juce::Colour onAccent{0xff1a1a1a};
+inline const juce::Colour text{0xffd1d1d1};
+inline const juce::Colour muted{0xff555555};
+inline const juce::Colour warn{0xffffb300};
+inline const juce::Colour error{0xffe60000};
 
 inline constexpr int cardPadding = 16;
 inline constexpr int rowGap = 10;
 inline constexpr int cardGap = 14;
 
-/** Matches the app's knob: 270 degrees of travel, thick track, accent fill. */
+/** Thin-line rotary knob, flat linear slider, and flat buttons/toggles --
+ *  Logic's own control shapes rather than JUCE's stock rounded defaults. */
 class KnobLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
                           float pos, float startAngle, float endAngle,
                           juce::Slider&) override {
         const auto bounds = juce::Rectangle<int>(x, y, width, height).toFloat().reduced(6.0f);
-        const float stroke = juce::jmin(14.0f, bounds.getWidth() * 0.11f);
+        const float stroke = 1.5f;
         const auto arcBounds = bounds.reduced(stroke * 0.5f);
         const auto centre = arcBounds.getCentre();
         const float radius = juce::jmin(arcBounds.getWidth(), arcBounds.getHeight()) * 0.5f;
@@ -39,46 +43,122 @@ public:
         track.addCentredArc(centre.x, centre.y, radius, radius, 0.0f, startAngle, endAngle, true);
         g.setColour(surfaceVariant);
         g.strokePath(track, juce::PathStrokeType(stroke, juce::PathStrokeType::curved,
-                                                 juce::PathStrokeType::rounded));
+                                                 juce::PathStrokeType::butt));
 
         if (pos > 0.001f) {
             juce::Path value;
             value.addCentredArc(centre.x, centre.y, radius, radius, 0.0f, startAngle, angle, true);
             g.setColour(accent);
             g.strokePath(value, juce::PathStrokeType(stroke, juce::PathStrokeType::curved,
-                                                     juce::PathStrokeType::rounded));
+                                                     juce::PathStrokeType::butt));
         }
 
+        const float faceRadius = radius * 0.72f;
+        const auto faceBounds = juce::Rectangle<float>(faceRadius * 2.0f, faceRadius * 2.0f)
+                                     .withCentre(centre);
         g.setColour(surface);
-        g.fillEllipse(juce::Rectangle<float>(radius * 2.0f - stroke * 2.0f,
-                                             radius * 2.0f - stroke * 2.0f)
-                          .withCentre(centre));
+        g.fillEllipse(faceBounds);
+        g.setColour(surfaceVariant);
+        g.drawEllipse(faceBounds, 1.0f);
 
-        const juce::Point<float> inner{centre.x + radius * 0.34f * std::sin(angle),
-                                       centre.y - radius * 0.34f * std::cos(angle)};
-        const juce::Point<float> outer{centre.x + (radius - stroke * 1.1f) * std::sin(angle),
-                                       centre.y - (radius - stroke * 1.1f) * std::cos(angle)};
+        const juce::Point<float> inner{centre.x + faceRadius * 0.3f * std::sin(angle),
+                                       centre.y - faceRadius * 0.3f * std::cos(angle)};
+        const juce::Point<float> outer{centre.x + faceRadius * 0.92f * std::sin(angle),
+                                       centre.y - faceRadius * 0.92f * std::cos(angle)};
         g.setColour(accent);
-        g.drawLine({inner, outer}, 4.0f);
+        g.drawLine({inner, outer}, 2.0f);
+    }
+
+    void drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
+                          float sliderPos, float minSliderPos, float maxSliderPos,
+                          const juce::Slider::SliderStyle style, juce::Slider& slider) override {
+        if (style != juce::Slider::LinearHorizontal) {
+            LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos, minSliderPos,
+                                             maxSliderPos, style, slider);
+            return;
+        }
+
+        const float trackH = 3.0f;
+        const float cy = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
+        g.setColour(slider.findColour(juce::Slider::backgroundColourId));
+        g.fillRect(juce::Rectangle<float>(static_cast<float>(x), cy - trackH * 0.5f,
+                                          static_cast<float>(width), trackH));
+        g.setColour(slider.findColour(juce::Slider::trackColourId));
+        g.fillRect(juce::Rectangle<float>(static_cast<float>(x), cy - trackH * 0.5f,
+                                          sliderPos - static_cast<float>(x), trackH));
+
+        const float thumbW = 4.0f, thumbH = 12.0f;
+        g.setColour(slider.findColour(juce::Slider::thumbColourId));
+        g.fillRect(juce::Rectangle<float>(sliderPos - thumbW * 0.5f, cy - thumbH * 0.5f,
+                                          thumbW, thumbH));
+    }
+
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
+                              const juce::Colour& backgroundColour,
+                              bool shouldDrawButtonAsHighlighted,
+                              bool shouldDrawButtonAsDown) override {
+        const auto bounds = button.getLocalBounds().toFloat();
+        auto fill = backgroundColour;
+        if (shouldDrawButtonAsDown) fill = fill.darker(0.15f);
+        else if (shouldDrawButtonAsHighlighted) fill = fill.brighter(0.08f);
+
+        if (button.getToggleState()) {
+            g.setColour(fill);
+            g.fillRect(bounds);
+        } else {
+            // Nearly flat -- Logic's own buttons vary only a few percent
+            // brightness top to bottom, enough to read as a surface without
+            // looking skeuomorphic.
+            juce::ColourGradient grad(fill.brighter(0.03f), bounds.getX(), bounds.getY(),
+                                      fill, bounds.getX(), bounds.getBottom(), false);
+            g.setGradientFill(grad);
+            g.fillRect(bounds);
+        }
+        g.setColour(surfaceVariant);
+        g.drawRect(bounds, 1.0f);
+    }
+
+    void drawToggleButton(juce::Graphics& g, juce::ToggleButton& button,
+                          bool /*shouldDrawButtonAsHighlighted*/,
+                          bool /*shouldDrawButtonAsDown*/) override {
+        const float boxSize = 14.0f;
+        const auto bounds = button.getLocalBounds().toFloat();
+        const juce::Rectangle<float> box(bounds.getX(), bounds.getCentreY() - boxSize * 0.5f,
+                                         boxSize, boxSize);
+
+        g.setColour(button.findColour(juce::ToggleButton::tickDisabledColourId));
+        g.drawRect(box, 1.0f);
+        if (button.getToggleState()) {
+            g.setColour(button.findColour(juce::ToggleButton::tickColourId));
+            g.fillRect(box.reduced(3.0f));
+        }
+
+        g.setColour(button.findColour(juce::ToggleButton::textColourId));
+        g.setFont(juce::FontOptions(13.0f));
+        const int textX = static_cast<int>(box.getRight()) + 8;
+        g.drawFittedText(button.getButtonText(),
+                         juce::Rectangle<int>(textX, 0, button.getWidth() - textX,
+                                               button.getHeight()),
+                         juce::Justification::centredLeft, 1);
     }
 };
 
-/** Pill selector, the desktop equivalent of the app's filter chips. */
+/** Flat rectangular tab, the desktop equivalent of the app's filter chips. */
 class Chip final : public juce::Button {
 public:
     explicit Chip(const juce::String& label) : juce::Button(label) { setClickingTogglesState(false); }
 
     void paintButton(juce::Graphics& g, bool hover, bool) override {
-        const auto r = getLocalBounds().toFloat().reduced(1.0f);
+        const auto r = getLocalBounds().toFloat();
         const bool on = getToggleState();
         g.setColour(on ? accent : surfaceVariant);
-        g.fillRoundedRectangle(r, r.getHeight() * 0.5f);
-        if (!on && hover) {
-            g.setColour(accent.withAlpha(0.35f));
-            g.drawRoundedRectangle(r, r.getHeight() * 0.5f, 1.0f);
+        g.fillRect(r);
+        if (!on) {
+            g.setColour(hover ? accent.withAlpha(0.5f) : surfaceVariant.brighter(0.15f));
+            g.drawRect(r, 1.0f);
         }
         g.setColour(on ? harmonizer::look::onAccent : harmonizer::look::text);
-        g.setFont(juce::FontOptions(13.0f, on ? juce::Font::bold : juce::Font::plain));
+        g.setFont(juce::FontOptions(13.0f));
         g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
     }
 };
@@ -112,7 +192,7 @@ private:
     bool emphasis_;
 };
 
-/** Thin rounded bar, amber past warnAbove and red past dangerAbove. */
+/** Thin flat bar, amber past warnAbove and red past dangerAbove. */
 class Meter final : public juce::Component {
 public:
     void setLevel(float v) {
@@ -125,18 +205,18 @@ public:
     void paint(juce::Graphics& g) override {
         const auto r = getLocalBounds().toFloat();
         g.setColour(surfaceVariant);
-        g.fillRoundedRectangle(r, r.getHeight() * 0.5f);
+        g.fillRect(r);
         if (level_ <= 0.001f) return;
         const auto colour = level_ >= 0.9f ? error : (level_ >= 0.7f ? warn : accent);
         g.setColour(colour);
-        g.fillRoundedRectangle(r.withWidth(r.getWidth() * level_), r.getHeight() * 0.5f);
+        g.fillRect(r.withWidth(r.getWidth() * level_));
     }
 
 private:
     float level_ = 0.0f;
 };
 
-/** Ten dots, lit for each sounding voice. */
+/** Ten flat squares, lit for each sounding voice. */
 class VoiceDots final : public juce::Component {
 public:
     void setActive(int n) {
@@ -147,8 +227,8 @@ public:
     void paint(juce::Graphics& g) override {
         for (int i = 0; i < 10; ++i) {
             g.setColour(i < active_ ? accent : surfaceVariant);
-            g.fillRoundedRectangle(static_cast<float>(i) * 16.0f, 0.0f, 10.0f,
-                                   static_cast<float>(getHeight()), 5.0f);
+            g.fillRect(static_cast<float>(i) * 16.0f, 0.0f, 10.0f,
+                      static_cast<float>(getHeight()));
         }
     }
 
@@ -176,7 +256,9 @@ private:
     juce::Colour colour_{muted};
 };
 
-/** Rounded surface with a small upper-case title, stacking its rows vertically. */
+/** Flat panel with a thin top divider and a small dense section title,
+ *  stacking its rows vertically -- Logic's own sub-panel treatment rather
+ *  than a padded, shadowed card. */
 class Card final : public juce::Component {
 public:
     explicit Card(juce::String title) : title_(std::move(title).toUpperCase()) {}
@@ -203,9 +285,11 @@ public:
 
     void paint(juce::Graphics& g) override {
         g.setColour(surface);
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 12.0f);
+        g.fillRect(getLocalBounds());
+        g.setColour(surfaceVariant);
+        g.fillRect(0, 0, getWidth(), 1);
         g.setColour(muted);
-        g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+        g.setFont(juce::FontOptions(11.0f));
         g.drawText(title_, cardPadding, cardPadding - 4, getWidth(), 16,
                    juce::Justification::centredLeft);
     }

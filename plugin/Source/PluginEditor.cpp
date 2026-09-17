@@ -2353,8 +2353,15 @@ private:
 
 HarmonizerAudioProcessorEditor::HarmonizerAudioProcessorEditor(HarmonizerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
+    // Applied here, at the editor Component root, rather than as JUCE's
+    // process-wide default LookAndFeel -- the latter is a static pointer,
+    // which is unsafe when a DAW has several instances of this plugin open
+    // at once. LookAndFeel lookup walks the parent chain, so this alone
+    // covers every child page and control below.
+    setLookAndFeel(&knobLook_);
+
     title_.setText("Harmonizer", juce::dontSendNotification);
-    title_.setFont(juce::FontOptions(22.0f, juce::Font::bold));
+    title_.setFont(juce::FontOptions(15.0f, juce::Font::plain));
     title_.setColour(juce::Label::textColourId, look::text);
     addAndMakeVisible(title_);
 
@@ -2364,14 +2371,17 @@ HarmonizerAudioProcessorEditor::HarmonizerAudioProcessorEditor(HarmonizerAudioPr
     version_.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(version_);
 
+    styleSmallButton(pageButton_);
     pageButton_.onClick = [this] {
         showPage(page_ == PageId::Settings ? PageId::Main : PageId::Settings);
     };
     addAndMakeVisible(pageButton_);
+    styleSmallButton(jazzButton_);
     jazzButton_.onClick = [this] {
         showPage(page_ == PageId::Jazz ? PageId::Main : PageId::Jazz);
     };
     addAndMakeVisible(jazzButton_);
+    styleSmallButton(panicButton_);
     panicButton_.onClick = [this] { processor_.allNotesOff(); };
     addAndMakeVisible(panicButton_);
 
@@ -2393,6 +2403,7 @@ HarmonizerAudioProcessorEditor::HarmonizerAudioProcessorEditor(HarmonizerAudioPr
 HarmonizerAudioProcessorEditor::~HarmonizerAudioProcessorEditor() {
     stopTimer();
     viewport_.setViewedComponent(nullptr, false);
+    setLookAndFeel(nullptr);
 }
 
 void HarmonizerAudioProcessorEditor::showPage(PageId page) {
@@ -2409,13 +2420,15 @@ void HarmonizerAudioProcessorEditor::showPage(PageId page) {
 
 void HarmonizerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.fillAll(look::background);
+    g.setColour(look::surfaceVariant);
+    g.fillRect(0, 47, getWidth(), 1);
 }
 
 void HarmonizerAudioProcessorEditor::resized() {
     // Three destinations now, so the version moves under the title rather than
     // competing with them for the strip along the top.
-    title_.setBounds(16, 6, 200, 26);
-    version_.setBounds(18, 30, 160, 14);
+    title_.setBounds(16, 8, 200, 20);
+    version_.setBounds(18, 28, 160, 14);
     panicButton_.setBounds(getWidth() - 232, 12, 62, 26);
     jazzButton_.setBounds(getWidth() - 164, 12, 62, 26);
     pageButton_.setBounds(getWidth() - 96, 12, 84, 26);

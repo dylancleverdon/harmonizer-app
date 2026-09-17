@@ -38,7 +38,7 @@ endif()
 
 juce_add_plugin(HarmonizerPlugin
         PRODUCT_NAME "Harmonizer"
-        COMPANY_NAME "Dylan Cleverdon"
+        COMPANY_NAME "Baastik Labs"
         BUNDLE_ID com.dylan.harmonizer.plugin
         PLUGIN_MANUFACTURER_CODE Dylc
         PLUGIN_CODE Hrmz
@@ -168,6 +168,46 @@ if(HARMONIZER_BUILD_TESTS)
             Source/JazzMidiImport.cpp)
     target_include_directories(HarmonizerJazzTest PRIVATE Source)
     target_compile_features(HarmonizerJazzTest PRIVATE cxx_std_17)
+
+    # Throwaway visual-check tool: renders the editor to a PNG off-screen, no
+    # display or external screenshot tooling required. EXCLUDE_FROM_ALL so it
+    # never builds as part of a normal build or CI -- opt in explicitly.
+    add_executable(HarmonizerPreview EXCLUDE_FROM_ALL
+            Tools/RenderPreview.cpp
+            Source/PluginProcessor.cpp
+            Source/PluginEditor.cpp
+            Source/PluginUpdater.cpp
+            Source/JazzVoicer.cpp
+            Source/JazzChordLibrary.cpp
+            Source/JazzDictionaryFactoryPresets.cpp
+            Source/JazzMidiImport.cpp
+            Source/PianoKeyboard.cpp
+            Shared/HarmonizerInstall.cpp
+            ${DSP_DIR}/Fft.cpp
+            ${DSP_DIR}/Resampler.cpp
+            ${DSP_DIR}/Analysis.cpp
+            ${DSP_DIR}/Voices.cpp
+            ${DSP_DIR}/Harmonizer.cpp)
+    target_include_directories(HarmonizerPreview PRIVATE ${DSP_DIR} Source Shared)
+    target_compile_definitions(HarmonizerPreview PUBLIC
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=1
+            JUCE_DISPLAY_SPLASH_SCREEN=0
+            JUCE_REPORT_APP_USAGE=0
+            JUCE_STANDALONE_APPLICATION=1
+            HARMONIZER_VERSION_CODE=${HARMONIZER_VERSION_CODE}
+            HARMONIZER_VERSION_NAME="${HARMONIZER_VERSION_NAME}")
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(HarmonizerPreview PRIVATE CURL::libcurl)
+    endif()
+    target_link_libraries(HarmonizerPreview PRIVATE
+            juce::juce_audio_utils
+            juce::juce_cryptography
+            juce::juce_dsp
+            juce::juce_gui_extra
+            PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
 endif()
 
 # ---------------------------------------------------------------------------
